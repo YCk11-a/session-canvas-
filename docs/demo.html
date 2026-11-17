@@ -1,0 +1,1445 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>会话画布 · 11-17 staged-d</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; overflow:hidden; background:#0e1015; color:#d7dae0;
+    font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif; font-size:14px; }
+  #viewport { position:absolute; inset:0; overflow:hidden; cursor:default; }
+  #world { position:absolute; transform-origin:0 0; will-change:transform;
+    background-image:radial-gradient(circle, #1e2230 1px, transparent 1.2px);
+    background-size:28px 28px; }
+  #edges { position:absolute; left:0; top:0; overflow:visible; pointer-events:none; }
+  #edges path { fill:none; stroke:#39415a; stroke-width:1.6; opacity:.85; }
+  #edges path.main { stroke:#54658c; stroke-width:2.2; opacity:.9; }
+  #edges path.hl { stroke:#6ea8fe; stroke-width:2.6; opacity:1; }
+  #edges path.merge { stroke:#7c5cff; stroke-dasharray:6 4; }
+  #edges path.mark { stroke:#8a6d3b; stroke-dasharray:2 4; }
+  #edges path.linking { stroke:#6ea8fe; stroke-width:2.4; stroke-dasharray:8 5; opacity:.95; }
+  .card.link-target { outline:2px dashed #6ea8fe; outline-offset:3px; }
+  body.linking, body.linking .card { cursor:crosshair !important; }
+
+  /* ---------- 卡片 ---------- */
+  .card { position:absolute; width:340px; background:#1a1e28; border:1px solid #2a3040;
+    border-radius:12px; padding:9px 13px 9px; cursor:grab; user-select:none;
+    box-shadow:0 2px 10px rgba(0,0,0,.35);
+    transition:box-shadow .15s, border-color .15s, opacity .18s; }
+  .card:hover { border-color:#4a5570; box-shadow:0 8px 26px rgba(0,0,0,.5); }
+  .card.user { border-left:3px solid #4a9eff; }
+  .card.assistant { border-left:3px solid #5cb87a; }
+  .card.gen { border-left:3px solid #a78bfa; }
+  .card.mark { border-left:3px solid #c9a227; border-style:dashed; background:#211d15; }
+  .card.selected { border-color:#6ea8fe; box-shadow:0 0 0 2px rgba(110,168,254,.35), 0 8px 28px rgba(0,0,0,.55); }
+  .card.onpath { border-color:#8fb4ec; box-shadow:0 0 0 1.5px rgba(143,180,236,.55), 0 8px 28px rgba(0,0,0,.55); opacity:1 !important; }
+  .card.faded2 { opacity:.42; }
+  .card.faded { opacity:.14; }
+  .card.hit { border-color:#c9a227; box-shadow:0 0 0 2px rgba(201,162,39,.55), 0 0 24px rgba(201,162,39,.28); opacity:1 !important; }
+  .card .head { display:flex; align-items:center; gap:7px; font-size:11px; color:#7d8598;
+    margin-bottom:6px; letter-spacing:.3px; padding-bottom:5px; border-bottom:1px solid rgba(255,255,255,.05); }
+  .card .head .who { font-weight:600; color:#aeb6c6; }
+  .card .head .time { margin-left:auto; font-size:10.5px; color:#5c6370; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; flex:none; }
+  .dot.u { background:#4a9eff; } .dot.a { background:#5cb87a; }
+  .dot.g { background:#a78bfa; } .dot.m { background:#c9a227; }
+  .card .body { max-height:230px; overflow:hidden; white-space:pre-wrap; word-break:break-word;
+    line-height:1.6; font-size:13.5px; color:#c9cfda; }
+  .card .body.more::after { content:"…双击看全文"; display:block; margin-top:6px; color:#6ea8fe; font-size:12px; }
+  .card.streaming .body { color:#b9a8f5; }
+  .card.streaming { animation:breathe 1.4s ease-in-out infinite; }
+  @keyframes breathe { 0%,100%{border-color:#4a3f6b} 50%{border-color:#a78bfa} }
+  .card .badge { position:absolute; top:-8px; right:10px; background:#a78bfa; color:#14121f;
+    font-size:10px; font-weight:700; padding:1px 7px; border-radius:8px; }
+  /* 语义缩放：compact = 前三行+渐隐；mini = 单行条 */
+  .card.z-compact .body { max-height:72px; overflow:hidden;
+    -webkit-mask-image:linear-gradient(#000 55%,transparent); mask-image:linear-gradient(#000 55%,transparent); }
+  .card.z-mini { padding:6px 11px 6px; }
+  .card.z-mini .head { margin-bottom:3px; padding-bottom:3px; }
+  .card.z-mini .body { max-height:20px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .card.z-mini .body.more::after { content:none; }
+
+  /* ---------- 顶栏 ---------- */
+  #toolbar { position:fixed; top:0; left:0; right:0; z-index:50; display:flex; gap:8px; align-items:center;
+    padding:8px 12px; background:rgba(14,16,21,.9); border-bottom:1px solid #232838;
+    backdrop-filter:blur(8px); flex-wrap:wrap; }
+  #toolbar .brand { font-weight:700; color:#9fb6d8; margin-right:4px; font-size:13px; }
+  #toolbar button { background:#1d2230; color:#cfd4dd; border:1px solid #333c52; border-radius:7px;
+    padding:5px 12px; font-size:12.5px; cursor:pointer; transition:background .12s, border-color .12s; }
+  #toolbar button:hover:not(:disabled) { background:#262d40; border-color:#5566a0; }
+  #toolbar button:disabled { opacity:.35; cursor:not-allowed; }
+  #toolbar button.primary { background:#34508a; border-color:#4a6ab0; color:#fff; }
+  #toolbar button.primary:hover:not(:disabled) { background:#3d5ea3; }
+  #searchwrap { position:relative; display:flex; align-items:center; }
+  #q { width:190px; background:#12151d; color:#d7dae0; border:1px solid #333c52; border-radius:7px;
+    padding:5px 10px; font-size:12.5px; outline:none; }
+  #q:focus { border-color:#6ea8fe; box-shadow:0 0 0 2px rgba(110,168,254,.2); }
+  #qinfo { position:absolute; left:100%; margin-left:8px; white-space:nowrap; color:#c9a227; font-size:11.5px; }
+  #selinfo { color:#8b93a5; font-size:12px; margin-left:auto; }
+
+  /* ---------- 上下文面板 ---------- */
+  #ctxpanel { position:fixed; top:52px; right:12px; z-index:49; width:320px; max-height:62vh; overflow:auto;
+    background:rgba(20,23,32,.96); border:1px solid #2c3448; border-radius:12px; padding:10px;
+    box-shadow:0 10px 34px rgba(0,0,0,.5); display:none; }
+  #ctxpanel h4 { font-size:12px; color:#9fb6d8; margin-bottom:8px; }
+  #ctxlist .item { background:#1a1e28; border:1px solid #2a3040; border-radius:7px; padding:5px 8px;
+    margin-bottom:5px; font-size:12px; color:#aab2c0; cursor:pointer; display:flex; gap:6px; align-items:baseline; }
+  #ctxlist .item:hover { border-color:#6ea8fe; }
+  #ctxlist .item .t { color:#5c6370; font-size:10.5px; flex:none; }
+
+  /* ---------- 小地图 ---------- */
+  #minimap { position:fixed; right:12px; bottom:44px; z-index:48; width:200px; height:140px;
+    background:rgba(16,19,27,.92); border:1px solid #2c3448; border-radius:10px; cursor:crosshair;
+    box-shadow:0 8px 28px rgba(0,0,0,.45); overflow:hidden; }
+  #minimap .mm-n { position:absolute; border-radius:1px; }
+  #minimap .mm-n.u { background:#4a9eff; } #minimap .mm-n.a { background:#5cb87a; }
+  #minimap .mm-n.g { background:#a78bfa; } #minimap .mm-n.m { background:#c9a227; }
+
+  /* ---------- 状态栏 / 引导 ---------- */
+  #stat { position:fixed; bottom:10px; left:12px; z-index:50; color:#5c6370; font-size:12px; }
+  #zoomind { position:fixed; bottom:10px; right:12px; z-index:50; color:#8b93a5; font-size:12px;
+    background:rgba(20,23,32,.9); border:1px solid #2c3448; border-radius:7px; padding:3px 10px; cursor:pointer; }
+  #zoomind:hover { border-color:#6ea8fe; color:#cfd4dd; }
+  #guide { position:fixed; left:12px; bottom:40px; z-index:60; width:330px; background:rgba(22,26,36,.97);
+    border:1px solid #35405c; border-radius:12px; padding:14px 16px; box-shadow:0 14px 44px rgba(0,0,0,.6); }
+  #guide b { color:#9fb6d8; font-size:13.5px; }
+  #guide ol { margin:8px 0 10px 18px; color:#aab2c0; font-size:12.5px; line-height:1.85; }
+  #guide kbd { background:#12151d; border:1px solid #333c52; border-radius:4px; padding:0 5px;
+    font-size:11px; font-family:inherit; color:#cfd4dd; }
+  #guide button { background:#34508a; border:1px solid #4a6ab0; color:#fff; border-radius:7px;
+    padding:5px 16px; font-size:12.5px; cursor:pointer; }
+
+  /* ---------- 弹窗 ---------- */
+  .modal-mask { position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:100;
+    display:none; align-items:center; justify-content:center; }
+  .modal { width:640px; max-width:92vw; max-height:86vh; overflow:auto; background:#181c26;
+    border:1px solid #333c52; border-radius:14px; padding:18px 20px;
+    box-shadow:0 20px 60px rgba(0,0,0,.6); }
+  .modal h3 { color:#cdd8ea; font-size:15px; margin-bottom:10px; }
+  .modal label { display:block; font-size:12px; color:#8b93a5; margin:10px 0 4px; }
+  .modal input, .modal textarea, .modal select { width:100%; background:#10131b; color:#d7dae0;
+    border:1px solid #2c3448; border-radius:7px; padding:7px 10px; font-size:13px; font-family:inherit; }
+  .modal textarea { resize:vertical; }
+  .modal .row { display:flex; gap:10px; } .modal .row > div { flex:1; }
+  .modal .foot { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+  .modal .foot button { background:#1d2230; color:#cfd4dd; border:1px solid #333c52;
+    border-radius:7px; padding:6px 16px; cursor:pointer; font-size:13px; }
+  .modal .foot button.go { background:#34508a; border-color:#4a6ab0; color:#fff; }
+  #ctxpreview { background:#10131b; border:1px solid #2a3040; border-radius:7px; padding:8px 10px;
+    max-height:180px; overflow:auto; font-size:12px; color:#9aa3b2; white-space:pre-wrap; margin-top:6px; }
+  .tok { color:#c9a227; font-size:12px; margin-left:8px; }
+  #fulltext { white-space:pre-wrap; word-break:break-word; line-height:1.65; font-size:13.5px;
+    max-height:60vh; overflow:auto; background:#10131b; border-radius:9px; padding:14px; color:#c9cfda; }
+
+/* ==== cv-theme layer ==== */
+:root[data-cv-palette="graphite"] {
+  color-scheme: dark;
+  --cv-bg: #0e1015;
+  --cv-bg-2: #12151d;
+  --cv-card: #1a1e28;
+  --cv-card-hi: #202634;
+  --cv-border: #2a3040;
+  --cv-border-hi: #4a5570;
+  --cv-text: #c9cfda;
+  --cv-text-hi: #e8ecf4;
+  --cv-muted: #8b93a5;
+  --cv-faint: #5c6370;
+  --cv-accent: #6ea8fe;
+  --cv-user: #4a9eff;
+  --cv-asst: #5cb87a;
+  --cv-gen: #a78bfa;
+  --cv-mark: #c9a227;
+  --cv-edge: #39415a;
+  --cv-edge-hi: #54658c;
+  --cv-grid: rgba(120,140,190,.16);
+  --cv-shadow: rgba(0,0,0,.45);
+  --cv-toolbar: rgba(14,16,21,.86);
+  --cv-chip: rgba(255,255,255,.04);
+  --cv-glow: rgba(110,168,254,.28);
+}
+:root[data-cv-palette="midnight"] {
+  color-scheme: dark;
+  --cv-bg: #0a1020;
+  --cv-bg-2: #101833;
+  --cv-card: #141d33;
+  --cv-card-hi: #1a2442;
+  --cv-border: #253055;
+  --cv-border-hi: #3d4f86;
+  --cv-text: #cfd8f0;
+  --cv-text-hi: #eef2ff;
+  --cv-muted: #8fa0c8;
+  --cv-faint: #64719a;
+  --cv-accent: #7aa2ff;
+  --cv-user: #5b9cff;
+  --cv-asst: #34d399;
+  --cv-gen: #c084fc;
+  --cv-mark: #fbbf24;
+  --cv-edge: #2f3d66;
+  --cv-edge-hi: #5068a8;
+  --cv-grid: rgba(122,162,255,.14);
+  --cv-shadow: rgba(0,0,0,.5);
+  --cv-toolbar: rgba(10,16,32,.88);
+  --cv-chip: rgba(255,255,255,.05);
+  --cv-glow: rgba(122,162,255,.3);
+}
+:root[data-cv-palette="forest"] {
+  color-scheme: dark;
+  --cv-bg: #0c1411;
+  --cv-bg-2: #0f1a15;
+  --cv-card: #16211b;
+  --cv-card-hi: #1c2a22;
+  --cv-border: #27362d;
+  --cv-border-hi: #3d5847;
+  --cv-text: #cfdcd3;
+  --cv-text-hi: #ecf5ef;
+  --cv-muted: #8ea79a;
+  --cv-faint: #617a6d;
+  --cv-accent: #5fd0a0;
+  --cv-user: #56b8e8;
+  --cv-asst: #7bd88f;
+  --cv-gen: #b7a6f7;
+  --cv-mark: #e0b64a;
+  --cv-edge: #2f4437;
+  --cv-edge-hi: #4a6a58;
+  --cv-grid: rgba(95,208,160,.13);
+  --cv-shadow: rgba(0,0,0,.45);
+  --cv-toolbar: rgba(12,20,17,.88);
+  --cv-chip: rgba(255,255,255,.04);
+  --cv-glow: rgba(95,208,160,.26);
+}
+:root[data-cv-palette="sand"] {
+  color-scheme: dark;
+  --cv-bg: #14110d;
+  --cv-bg-2: #1a1611;
+  --cv-card: #221d16;
+  --cv-card-hi: #2a241b;
+  --cv-border: #3a3128;
+  --cv-border-hi: #5c4d3c;
+  --cv-text: #e3d9c8;
+  --cv-text-hi: #f6efe2;
+  --cv-muted: #ab9c86;
+  --cv-faint: #7d705c;
+  --cv-accent: #e0a458;
+  --cv-user: #d98b4f;
+  --cv-asst: #8cbf7a;
+  --cv-gen: #c69be0;
+  --cv-mark: #d9b04a;
+  --cv-edge: #4a3d2f;
+  --cv-edge-hi: #6d5841;
+  --cv-grid: rgba(224,164,88,.12);
+  --cv-shadow: rgba(0,0,0,.5);
+  --cv-toolbar: rgba(20,17,13,.9);
+  --cv-chip: rgba(255,255,255,.05);
+  --cv-glow: rgba(224,164,88,.26);
+}
+:root[data-cv-palette="light"] {
+  color-scheme: light;
+  --cv-bg: #f3f5f9;
+  --cv-bg-2: #ffffff;
+  --cv-card: #ffffff;
+  --cv-card-hi: #f8fafd;
+  --cv-border: #dfe3ec;
+  --cv-border-hi: #b9c2d4;
+  --cv-text: #2b3240;
+  --cv-text-hi: #131924;
+  --cv-muted: #6b7280;
+  --cv-faint: #98a1b3;
+  --cv-accent: #2f6feb;
+  --cv-user: #2f6feb;
+  --cv-asst: #1f9d63;
+  --cv-gen: #7c5cff;
+  --cv-mark: #b8860b;
+  --cv-edge: #c6cedd;
+  --cv-edge-hi: #9aa8c4;
+  --cv-grid: rgba(47,111,235,.12);
+  --cv-shadow: rgba(16,24,40,.12);
+  --cv-toolbar: rgba(255,255,255,.9);
+  --cv-chip: rgba(16,24,40,.04);
+  --cv-glow: rgba(47,111,235,.22);
+}
+:root[data-cv-palette="contrast"] {
+  color-scheme: dark;
+  --cv-bg: #000000;
+  --cv-bg-2: #0a0a0a;
+  --cv-card: #0f0f0f;
+  --cv-card-hi: #161616;
+  --cv-border: #3f3f3f;
+  --cv-border-hi: #777777;
+  --cv-text: #f2f2f2;
+  --cv-text-hi: #ffffff;
+  --cv-muted: #bdbdbd;
+  --cv-faint: #8a8a8a;
+  --cv-accent: #ffd400;
+  --cv-user: #4dabff;
+  --cv-asst: #3ddc84;
+  --cv-gen: #d38bff;
+  --cv-mark: #ffca28;
+  --cv-edge: #5a5a5a;
+  --cv-edge-hi: #9a9a9a;
+  --cv-grid: rgba(255,255,255,.10);
+  --cv-shadow: #000000;
+  --cv-toolbar: rgba(0,0,0,.92);
+  --cv-chip: rgba(255,255,255,.06);
+  --cv-glow: rgba(255,212,0,.3);
+}
+
+/* ---- 视觉精修：统一令牌、层次、动效 ---- */
+:root[data-cv-palette] html,
+:root[data-cv-palette] body {
+  background: var(--cv-bg);
+  color: var(--cv-text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+:root[data-cv-palette] ::selection { background: var(--cv-glow); }
+:root[data-cv-palette] * { scrollbar-width: thin; }
+:root[data-cv-palette] ::-webkit-scrollbar { width: 8px; height: 8px; }
+:root[data-cv-palette] ::-webkit-scrollbar-thumb {
+  background: var(--cv-border-hi); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box;
+}
+:root[data-cv-palette] ::-webkit-scrollbar-track { background: transparent; }
+
+:root[data-cv-palette] #world {
+  background-image: radial-gradient(circle, var(--cv-grid) 1px, transparent 1.2px);
+}
+:root[data-cv-palette] #edges path { stroke: var(--cv-edge); }
+:root[data-cv-palette] #edges path.main { stroke: var(--cv-edge-hi); }
+:root[data-cv-palette] #edges path.hl { stroke: var(--cv-accent); }
+:root[data-cv-palette] #edges path.merge { stroke: var(--cv-gen); }
+:root[data-cv-palette] #edges path.mark { stroke: var(--cv-mark); }
+
+:root[data-cv-palette] .card {
+  background: linear-gradient(180deg, var(--cv-card-hi), var(--cv-card) 46%);
+  border-color: var(--cv-border);
+  border-radius: 14px;
+  box-shadow: 0 2px 10px var(--cv-shadow), 0 1px 0 var(--cv-chip) inset;
+  transition: box-shadow .16s ease, border-color .16s ease, transform .16s ease, opacity .18s ease;
+}
+:root[data-cv-palette] .card:hover {
+  border-color: var(--cv-border-hi);
+  box-shadow: 0 10px 28px var(--cv-shadow);
+  transform: translateY(-1px);
+}
+:root[data-cv-palette] .card.user { border-left-color: var(--cv-user); }
+:root[data-cv-palette] .card.assistant { border-left-color: var(--cv-asst); }
+:root[data-cv-palette] .card.gen { border-left-color: var(--cv-gen); }
+:root[data-cv-palette] .card.mark {
+  border-left-color: var(--cv-mark);
+  background: linear-gradient(180deg, var(--cv-card), var(--cv-bg-2));
+  border-style: dashed;
+}
+:root[data-cv-palette] .card.selected {
+  border-color: var(--cv-accent);
+  box-shadow: 0 0 0 2px var(--cv-glow), 0 10px 30px var(--cv-shadow);
+}
+:root[data-cv-palette] .card.onpath {
+  border-color: var(--cv-accent);
+  box-shadow: 0 0 0 1.5px var(--cv-glow), 0 8px 26px var(--cv-shadow);
+}
+:root[data-cv-palette] .card.hit {
+  border-color: var(--cv-mark);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cv-mark) 55%, transparent), 0 0 22px color-mix(in srgb, var(--cv-mark) 28%, transparent);
+}
+:root[data-cv-palette] .card .head {
+  color: var(--cv-muted);
+  border-bottom-color: var(--cv-chip);
+}
+:root[data-cv-palette] .card .head .who { color: var(--cv-text-hi); }
+:root[data-cv-palette] .card .head .time { color: var(--cv-faint); }
+:root[data-cv-palette] .card .body { color: var(--cv-text); }
+:root[data-cv-palette] .card .body.more::after { color: var(--cv-accent); }
+:root[data-cv-palette] .card.streaming .body { color: var(--cv-gen); }
+:root[data-cv-palette] .card.streaming { animation: cv-breathe 1.4s ease-in-out infinite; }
+@keyframes cv-breathe {
+  0%, 100% { border-color: var(--cv-border); }
+  50% { border-color: var(--cv-gen); }
+}
+:root[data-cv-palette] .card .badge { background: var(--cv-gen); color: var(--cv-bg); }
+:root[data-cv-palette] .dot.u { background: var(--cv-user); }
+:root[data-cv-palette] .dot.a { background: var(--cv-asst); }
+:root[data-cv-palette] .dot.g { background: var(--cv-gen); }
+:root[data-cv-palette] .dot.m { background: var(--cv-mark); }
+
+:root[data-cv-palette] #toolbar {
+  background: var(--cv-toolbar);
+  border-bottom-color: var(--cv-border);
+  backdrop-filter: blur(12px) saturate(1.15);
+  gap: 6px;
+  padding: 9px 12px;
+}
+:root[data-cv-palette] #toolbar .brand { color: var(--cv-text-hi); letter-spacing: .2px; }
+:root[data-cv-palette] #toolbar button {
+  background: var(--cv-chip);
+  color: var(--cv-text);
+  border-color: var(--cv-border);
+  border-radius: 9px;
+  padding: 6px 12px;
+  transition: background .14s ease, border-color .14s ease, color .14s ease;
+}
+:root[data-cv-palette] #toolbar button:hover:not(:disabled) {
+  background: var(--cv-card-hi);
+  border-color: var(--cv-border-hi);
+  color: var(--cv-text-hi);
+}
+:root[data-cv-palette] #toolbar button:focus-visible {
+  outline: 2px solid var(--cv-accent);
+  outline-offset: 1px;
+}
+:root[data-cv-palette] #toolbar button.primary {
+  background: var(--cv-accent);
+  border-color: transparent;
+  color: var(--cv-bg);
+  font-weight: 600;
+}
+:root[data-cv-palette] #toolbar button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+:root[data-cv-palette] #q {
+  background: var(--cv-bg-2);
+  color: var(--cv-text);
+  border-color: var(--cv-border);
+  border-radius: 9px;
+}
+:root[data-cv-palette] #q:focus { border-color: var(--cv-accent); box-shadow: 0 0 0 2px var(--cv-glow); }
+:root[data-cv-palette] #q::placeholder { color: var(--cv-faint); }
+:root[data-cv-palette] #qinfo { color: var(--cv-mark); }
+:root[data-cv-palette] #selinfo { color: var(--cv-muted); }
+
+:root[data-cv-palette] #cvPalette {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--cv-text);
+  background: var(--cv-bg-2);
+  border: 1px solid var(--cv-border);
+  border-radius: 9px;
+  padding: 6px 10px;
+  outline: none;
+  cursor: pointer;
+}
+:root[data-cv-palette] #cvPalette:focus-visible { border-color: var(--cv-accent); box-shadow: 0 0 0 2px var(--cv-glow); }
+
+:root[data-cv-palette] #ctxpanel {
+  background: var(--cv-bg-2);
+  border-color: var(--cv-border);
+  box-shadow: 0 14px 40px var(--cv-shadow);
+}
+:root[data-cv-palette] #ctxpanel h4 { color: var(--cv-text-hi); }
+:root[data-cv-palette] #ctxlist .item { background: var(--cv-card); border-color: var(--cv-border); color: var(--cv-text); }
+:root[data-cv-palette] #ctxlist .item:hover { border-color: var(--cv-accent); }
+:root[data-cv-palette] #ctxlist .item .t { color: var(--cv-faint); }
+
+:root[data-cv-palette] #minimap {
+  background: color-mix(in srgb, var(--cv-bg-2) 92%, transparent);
+  border-color: var(--cv-border);
+  box-shadow: 0 10px 30px var(--cv-shadow);
+}
+:root[data-cv-palette] #minimap .mm-n.u { background: var(--cv-user); }
+:root[data-cv-palette] #minimap .mm-n.a { background: var(--cv-asst); }
+:root[data-cv-palette] #minimap .mm-n.g { background: var(--cv-gen); }
+:root[data-cv-palette] #minimap .mm-n.m { background: var(--cv-mark); }
+:root[data-cv-palette] #stat { color: var(--cv-faint); }
+:root[data-cv-palette] #zoomind {
+  color: var(--cv-muted);
+  background: color-mix(in srgb, var(--cv-bg-2) 92%, transparent);
+  border-color: var(--cv-border);
+}
+:root[data-cv-palette] #zoomind:hover { border-color: var(--cv-accent); color: var(--cv-text-hi); }
+:root[data-cv-palette] #guide {
+  background: var(--cv-bg-2);
+  border-color: var(--cv-border);
+  color: var(--cv-text);
+  box-shadow: 0 18px 50px var(--cv-shadow);
+}
+:root[data-cv-palette] #guide b { color: var(--cv-text-hi); }
+:root[data-cv-palette] #guide button,
+:root[data-cv-palette] .modal .foot button {
+  background: var(--cv-chip);
+  color: var(--cv-text);
+  border: 1px solid var(--cv-border);
+  border-radius: 9px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+:root[data-cv-palette] #guide button:hover,
+:root[data-cv-palette] .modal .foot button:hover { border-color: var(--cv-border-hi); color: var(--cv-text-hi); }
+:root[data-cv-palette] .modal-mask { background: color-mix(in srgb, var(--cv-bg) 62%, transparent); }
+:root[data-cv-palette] .modal {
+  background: var(--cv-bg-2);
+  border-color: var(--cv-border);
+  color: var(--cv-text);
+  box-shadow: 0 24px 70px var(--cv-shadow);
+}
+:root[data-cv-palette] .modal h3 { color: var(--cv-text-hi); }
+:root[data-cv-palette] .modal label { color: var(--cv-muted); }
+:root[data-cv-palette] .modal textarea,
+:root[data-cv-palette] #fulltext {
+  background: var(--cv-card);
+  color: var(--cv-text);
+  border-color: var(--cv-border);
+  border-radius: 10px;
+}
+:root[data-cv-palette] .modal textarea:focus { border-color: var(--cv-accent); box-shadow: 0 0 0 2px var(--cv-glow); }
+:root[data-cv-palette] .modal .go {
+  background: var(--cv-accent);
+  border-color: transparent;
+  color: var(--cv-bg);
+  font-weight: 600;
+}
+:root[data-cv-palette] .tok { color: var(--cv-mark); }
+:root[data-cv-palette] kbd {
+  background: var(--cv-chip);
+  border: 1px solid var(--cv-border);
+  border-radius: 5px;
+  padding: 0 5px;
+  color: var(--cv-text-hi);
+}
+@media (prefers-reduced-motion: reduce) {
+  :root[data-cv-palette] .card { transition: none; }
+  :root[data-cv-palette] .card.streaming { animation: none; }
+}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <span class="brand">会话画布</span>
+  <span id="searchwrap"><input id="q" placeholder="搜索对话内容  ( / )" autocomplete="off"><span id="qinfo"></span></span>
+  <button id="bMerge" disabled>合并所选</button>
+  <button id="bBranch" disabled>从此发散</button>
+  <button id="bFit" title="快捷键 1">全览</button>
+  <button id="bLayout" title="纵列 ↔ 分栏（蛇形）排版">分栏</button>
+  <button id="bLock" title="锁定缩放倍率；锁后滚轮=平移浏览">锁倍率</button>
+  <button id="bFocus" disabled title="只显示从开头到所选节点的路径（快捷键 F）">聚焦</button>
+  <button id="bUnfocus" style="display:none">退出聚焦</button>
+  <button id="bExport">导出</button>
+  <button id="bImport">导入</button>
+  <button id="bApi">API 设置</button>
+  <input type="file" id="fImport" accept=".json" style="display:none">
+  <select id="cvPalette" title="画布配色"><option value="auto">配色：跟随系统</option><option value="graphite">石墨</option><option value="midnight">午夜蓝</option><option value="forest">森绿</option><option value="sand">暖沙</option><option value="light">浅色</option><option value="contrast">高对比</option></select>
+  <span id="selinfo"></span>
+</div>
+<div id="ctxpanel"><h4>已选上下文（<span id="ctxn">0</span>）</h4><div id="ctxlist"></div></div>
+<div id="viewport"><div id="world">
+  <svg id="edges"></svg>
+  <div id="nodes"></div>
+</div></div>
+<div id="minimap"></div>
+<div id="stat"></div>
+<div id="zoomind" title="点击回到 100%">100%</div>
+<div id="guide" style="display:none">
+  <b>快速上手</b>
+  <ol>
+    <li>左键拖空白平移 · Shift+拖空白框选 · 拖卡片移动</li>
+    <li>单击选卡片 · Ctrl+点击多选 · 滚轮缩放（卡片内滚轮=滚内容）</li>
+    <li>选多条 → <b>合并</b>：拼上下文让模型综合生成</li>
+    <li>选一条 → <b>发散</b>：从该点岔出新对话</li>
+    <li>双击卡片看全文 · <kbd>F</kbd> 聚焦该节点前的路径</li>
+    <li><kbd>/</kbd> 搜索 · <kbd>1</kbd> 全览 · 右下小地图点击跳转</li>
+    <li>悬停卡片可高亮它之前的对话路径</li>
+    <li><b>Shift+拖拽卡片</b>：从 A 拖到 B = 把 B 接到 A 后面（自己连线）</li>
+  </ol>
+  <button id="guideOk">知道了</button>
+</div>
+
+<div class="modal-mask" id="mAsk"><div class="modal">
+  <h3 id="askTitle">发散</h3>
+  <div id="askCtxWrap"><label>将送入的上下文（按时间序，可删改）：</label>
+    <textarea id="askCtx" rows="8"></textarea><span class="tok" id="askTok"></span></div>
+  <label>你的指令 / 问题：</label>
+  <textarea id="askQ" rows="3" placeholder="例如：把这几段讨论总结成三点结论 / 基于以上继续展开 X"></textarea>
+  <div class="foot">
+    <button id="askCancel">取消</button>
+    <button id="askGo" class="go">发送 →</button>
+  </div>
+</div></div>
+
+<div class="modal-mask" id="mApi"><div class="modal">
+  <h3>API 设置（OpenAI 兼容端点）</h3>
+  <label>Base URL</label><input id="apiBase" placeholder="https://api.example.com/v1">
+  <label>API Key（只存本机浏览器 localStorage，不会写进导出文件）</label><input id="apiKey" type="password" placeholder="sk-...">
+  <div class="row">
+    <div><label>模型</label><input id="apiModel" placeholder="k2p6 / claude-sonnet-5-5 / ..."></div>
+    <div><label>Temperature</label><input id="apiTemp" type="number" step="0.1" min="0" max="2" value="0.7"></div>
+  </div>
+  <div class="foot">
+    <span id="apiMsg" style="margin-right:auto;color:#8fd6a4;font-size:12px;align-self:center"></span>
+    <button id="apiTest">测试连接</button>
+    <button id="apiSave" class="go">保存</button>
+  </div>
+</div></div>
+
+<div class="modal-mask" id="mFull"><div class="modal">
+  <h3 id="fullTitle">全文</h3><div id="fulltext"></div>
+  <div class="foot"><button onclick="closeFull()">关闭</button></div>
+</div></div>
+
+<script>
+/* ================= 内嵌数据（生成器注入，无凭证） ================= */
+const EMBED_META = {"sessionId":"staged-demo","source":"openclaw","messageCount":61,"generatedAt":"2026-11-17T12:40:11.325Z","date":"2026-11-17","title":"11-17 staged-d"};
+const EMBED_NODES = [{"id":1,"role":"user","text":"想做个纯前端的番茄钟网页小工具，只有下班后有时间折腾。帮我规划一个最小可行版本，别一上来就铺太大","time":"11-09 20:34","x":0,"y":0,"parents":[],"gen":false},{"id":2,"role":"assistant","text":"好，先把范围钉死。MVP 只做三件事：\n\n1. 25 分钟工作计时（可开始/暂停/重置）\n2. 到时播放提示音 + 页面标题闪烁\n3. 完成后弹一个\"休息 5 分钟\"的提示\n\n明确不做的：用户系统、云端同步、数据统计、任何后端。全部塞进一个 HTML 文件，双击就能用。\n\n建议节奏：今晚先把计时核心跑通，明晚做提示音和休息循环，后天润色样式。每步都留一个能直接打开的版本。","time":"11-09 20:38","x":0,"y":0,"parents":[1],"gen":false},{"id":3,"role":"user","text":"同意。统计先砍掉。页面结构上你怎么建议？要不要分成几个区块","time":"11-09 20:44","x":0,"y":0,"parents":[2],"gen":false},{"id":4,"role":"assistant","text":"单页单区块就够了，从上到下：\n\n- 顶部：一个大大的倒计时数字（这是主角，字号要压倒性）\n- 中部：开始 / 暂停 / 重置三个按钮\n- 底部一行小字：当前是\"工作\"还是\"休息\"阶段、第几轮\n\n关键原则：视线永远落在倒计时上，其他元素弱化。倒计时数字建议用等宽字体，避免数字宽度跳动。布局用 flex 垂直居中，移动端也能直接用。","time":"11-09 20:48","x":0,"y":0,"parents":[3],"gen":false},{"id":5,"role":"user","text":"开始写吧，直接给我能跑的完整代码","time":"11-09 20:53","x":0,"y":0,"parents":[4],"gen":false},{"id":6,"role":"assistant","text":"第一版来了，保存成 pomodoro.html 直接打开：\n\n<!doctype html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>番茄钟<\/title>\n<style>\nbody { font-family: system-ui; display:flex; flex-direction:column;\nalign-items:center; justify-content:center; height:100vh; margin:0; }\n#t { font-size:96px; font-variant-numeric:tabular-nums; }\nbutton { font-size:18px; margin:0 6px; padding:8px 20px; }\n<\/style>\n<\/head>\n<body>\n<div id=\"t\">25:00<\/div>\n<div>\n<button id=\"start\">开始<\/button>\n<button id=\"pause\">暂停<\/button>\n<button id=\"reset\">重置<\/button>\n<\/div>\n<script>\nlet remain = 25 * 60, timer = null;\nconst el = document.getElementById('t');\nfunction draw(){\nconst m = String(Math.floor(remain/60)).padStart(2,'0');\nconst s = String(remain%60).padStart(2,'0');\nel.textContent = m + ':' + s;\n}\ndocument.getElementById('start').onclick = () => {\nif (timer) return;\ntimer = setInterval(() => { remain--; draw();\nif (remain <= 0) clearInterval(timer); }, 1000);\n};\ndocument.getElementById('pause').onclick = () => {\nclearInterval(timer); timer = null; };\ndocument.getElementById('reset').onclick = () => {\nclearInterval(timer); timer = null; remain = 25*60; draw(); };\ndraw();\n<\/script>\n<\/body>\n<\/html>\n\n先跑通这个，有问题再改。","time":"11-09 20:58","x":0,"y":0,"parents":[5],"gen":false},{"id":7,"role":"user","text":"试了下，倒计时到 0 之后虽然停了，但数字卡在 00:00，而且提示音根本没响","time":"11-09 21:02","x":0,"y":0,"parents":[6],"gen":false},{"id":8,"role":"assistant","text":"两个问题一起说：\n\n1. 卡 00:00：到 0 时你只清了 interval，没有做任何\"结束\"动作，所以界面停在 0。\n2. 没提示音：你还没写提示音的代码，第一版里确实没有。\n\n修复思路：到 0 时走一个 onDone() —— 清定时器、播提示音、把阶段切到\"休息\"。提示音用 WebAudio 现写一个 beep，不依赖外部文件。","time":"11-09 21:05","x":0,"y":0,"parents":[7],"gen":false},{"id":9,"role":"assistant","text":"改这三处：\n\n// 1) 替换 setInterval 里的结束分支\ntimer = setInterval(() => {\nremain--; draw();\nif (remain <= 0) { onDone(); }\n}, 1000);\n\n// 2) 新增结束处理 + 提示音\nfunction beep(){\nconst ctx = new (window.AudioContext || window.webkitAudioContext)();\nconst o = ctx.createOscillator();\nconst g = ctx.createGain();\no.connect(g); g.connect(ctx.destination);\no.frequency.value = 880;\ng.gain.setValueAtTime(0.3, ctx.currentTime);\ng.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);\no.start(); o.stop(ctx.currentTime + 0.8);\n}\nfunction onDone(){\nclearInterval(timer); timer = null;\nbeep();\ndocument.title = '时间到！';\n}\n\n// 3) reset 里把标题改回来\ndocument.getElementById('reset').onclick = () => {\nclearInterval(timer); timer = null;\nremain = 25*60; document.title = '番茄钟'; draw();\n};\n\n试下：现在到 0 会响一声，标题也会变。","time":"11-09 21:07","x":0,"y":0,"parents":[8],"gen":false},{"id":10,"role":"user","text":"提示音在 Chrome 里还是不响， Console 报 \"AudioContext was not allowed to start\"","time":"11-09 21:10","x":0,"y":0,"parents":[9],"gen":false},{"id":11,"role":"assistant","text":"这是浏览器的自动播放策略：页面加载完之前不能出声，必须由用户手势解锁。\n\n解法：第一次点击\"开始\"时创建并 resume AudioContext，之后它就被解锁了。改法：\n\nlet ctx = null;\nfunction ensureAudio(){\nif (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();\nif (ctx.state === 'suspended') ctx.resume();\n}\n\n在 start 按钮的回调开头调 ensureAudio()，beep() 里改用这个全局 ctx。\n\n顺序很重要：必须发生在用户点击的事件处理里，放别的地方都不算手势。","time":"11-09 21:13","x":0,"y":0,"parents":[10],"gen":false},{"id":12,"role":"user","text":"懂了。接下来加\"长休息自动循环\"：每 4 轮工作，之后休息 15 分钟，其余 5 分钟","time":"11-09 21:19","x":0,"y":0,"parents":[11],"gen":false},{"id":13,"role":"assistant","text":"这需要一个显式的状态机，不然 if-else 会越写越乱。建议：\n\nconst PHASE = { WORK: 'work', BREAK: 'break', LBreak: 'lbreak' };\nlet phase = PHASE.WORK;\nlet round = 1; // 当前是第几轮工作\nconst LEN = { work: 25*60, break: 5*60, lbreak: 15*60 };\n\n转换规则只有一条主线：\n- 工作结束 → 若 round % 4 === 0 进入 lbreak，否则进入 break\n- 任何休息结束 → round++，回到 work\n\n把 onDone 改成按当前 phase 决定下一个 phase，然后从 LEN 取新时长重置 remain。暂停/重置逻辑不动，只重置时把 phase 和 round 也归位。\n\n状态机的好处是以后加\"跳过休息\"之类的操作，只是多加一条转移边，不用翻整堆条件。","time":"11-09 21:24","x":0,"y":0,"parents":[12],"gen":false},{"id":14,"role":"user","text":"状态转换我看懂了，但 round++ 放在休息结束时，那重置之后 round 是回 1 还是保持？","time":"11-09 21:29","x":0,"y":0,"parents":[13],"gen":false},{"id":15,"role":"assistant","text":"回 1。round 表示\"今天完成了几轮工作\"，重置意味着今天重来，应该从第一轮重新计数。\n\n但注意一个细节：round 在\"休息结束\"时才 +1，意味着\"工作进行中\"round 还是当前轮。这是对的——屏幕上显示\"第 N 轮\"应该包含正在进行的那轮。\n\n所以：\n- 工作结束进入休息：round 不变（第 N 轮刚做完）\n- 休息结束进入工作：round+1（开始第 N+1 轮）\n- 重置：phase→work，round→1，remain→25:00\n\n这个语义自洽，界面上也说得通。","time":"11-09 21:32","x":0,"y":0,"parents":[14],"gen":false},{"id":16,"role":"user","text":"样式太素了，想要暗色底加霓虹感，像夜市灯牌那种","time":"11-09 21:35","x":0,"y":0,"parents":[15],"gen":false},{"id":17,"role":"assistant","text":"方向可以，霓虹风的要点是三件事：\n\n1. 底色：深蓝黑（#0b1020 一类），压低整体明度\n2. 主光源色：青紫二选一，倒计时数字用它，加 text-shadow 两层外发光\n3. 按钮：透明底 + 同色描边，hover 时整颗点亮\n\n参考这组值，直接替换 CSS 变量：\n\n:root {\n--bg: #0b1020;\n--neon: #00e5ff; /* 主色 */\n--neon-dim: #0891b2;\n--text: #dbe7ff;\n}\nbody { background: var(--bg); color: var(--text); }\n#t { color: var(--neon);\ntext-shadow: 0 0 12px var(--neon), 0 0 42px var(--neon-dim);\nfont-size: 110px; }\nbutton { background: transparent; color: var(--neon);\nborder: 1px solid var(--neon-dim); border-radius: 8px; }\nbutton:hover { background: var(--neon); color: #06232b;\nbox-shadow: 0 0 18px var(--neon); }\n\n霓虹风最忌讳颜色多，全程只用这一个主色，克制才像灯牌。","time":"11-09 21:37","x":0,"y":0,"parents":[16],"gen":false},{"id":18,"role":"user","text":"想在系统深色/浅色模式切换时自动换主题，怎么做最省事","time":"11-09 21:43","x":0,"y":0,"parents":[17],"gen":false},{"id":19,"role":"assistant","text":"最省事的做法：把上面那套霓虹色定义成 [data-theme=\"dark\"]，再写一套浅色变量，然后用 media query 自动切：\n\n@media (prefers-color-scheme: light) {\n:root {\n--bg: #f4f7ff;\n--neon: #0e7490;\n--neon-dim: #67cbe0;\n--text: #16213a;\n}\n}\n\nJavaScript 完全不用动，CSS 自己感知系统主题。 Neon 在浅色底上要压深一档，不然对比度不够。\n\n如果想加手动切换开关，就 JS 改 html 的 data-theme 属性，优先级高于 media query。但第一版先不加，自动切换已经覆盖大多数场景。","time":"11-09 21:48","x":0,"y":0,"parents":[18],"gen":false},{"id":20,"role":"user","text":"帮我写个 README，准备放 GitHub","time":"11-09 21:54","x":0,"y":0,"parents":[19],"gen":false},{"id":21,"role":"assistant","text":"草稿：\n\n# FocusFlow · 番茄钟\n\n一个零依赖的单文件番茄钟网页工具，打开即用。\n\n## 功能\n- 25/5 分钟工作-休息循环，每 4 轮进入 15 分钟长休息\n- 到时提示音（WebAudio 合成，无需音频文件）+ 标题提醒\n- 自动跟随系统深色/浅色模式\n- 全部数据在本地，无任何网络请求\n\n## 使用\n下载 pomodoro.html，双击打开。或者直接用 GitHub Pages 托管在线版。\n\n## 技术\n原生 HTML/CSS/JS，无构建步骤，无依赖。\n\n## License\nMIT\n\n结构是标准四段：是什么 → 能干什么 → 怎么用 → 什么许可。截图位先留着，等界面定稿后补一张 docs/images 下的图。","time":"11-09 21:58","x":0,"y":0,"parents":[20],"gen":false},{"id":22,"role":"user","text":"名字我想了好几个：PomodoroX、TomatoFlow、FocusFlow、Minuteman，拿不定","time":"11-09 22:01","x":0,"y":0,"parents":[21],"gen":false},{"id":23,"role":"assistant","text":"逐个说：\n\n- PomodoroX：太直白，\"番茄工作法+字母X\"是 2015 年的命名套路，显旧\n- TomatoFlow：tomato 在英语里有\"脸红了\"的俚语感，不够稳重\n- FocusFlow：双 F 好念好记，focus 说功能，flow 说状态，发音顺口\n- Minuteman：有美国历史梗（ minute man 独立战争民兵），容易跑偏\n\n我投 FocusFlow。语义准、无歧义、域名和 npm 重名概率低。你要不要我现在帮你查一下 GitHub 和 npm 上的占用情况？","time":"11-09 22:06","x":0,"y":0,"parents":[22],"gen":false},{"id":24,"role":"user","text":"就用 FocusFlow。帮我查下重名","time":"11-09 22:08","x":0,"y":0,"parents":[23],"gen":false},{"id":25,"role":"assistant","text":"查完了：\n\n- GitHub：搜 \"FocusFlow\" 有不少同名仓库，但大多是沉项目（最近提交在 2-3 年前），没有活跃的同名番茄钟项目\n- npm：focusflow 包存在但周下载量个位数，且不是计时器类\n- 域名：focusflow.app / .dev 都还被注册着，先用 GitHub Pages 的 <name>.github.io/focusflow 就够了\n\n结论：可以用。README 标题改成 FocusFlow，仓库名建议 focusflow 小写。","time":"11-09 22:13","x":0,"y":0,"parents":[24],"gen":false},{"id":26,"role":"user","text":"想发布到 GitHub Pages，流程是怎样的","time":"11-09 22:19","x":0,"y":0,"parents":[25],"gen":false},{"id":27,"role":"assistant","text":"四步：\n\n1. 建仓库：GitHub 上 New repository，名字 focusflow，Public\n2. 推代码：git init → add → commit → 关联远程 → push\n3. 开 Pages：Settings → Pages → Source 选 main 分支根目录，保存\n4. 等 1-2 分钟，访问 https://<你的用户名>.github.io/focusflow/\n\n单文件项目最简单的方式是直接把 pomodoro.html 改名 index.html 放根目录，Pages 会把 index.html 当首页。\n\n以后每次 push 到 main，Pages 会自动重新部署，不用手动操作。","time":"11-09 22:24","x":0,"y":0,"parents":[26],"gen":false},{"id":28,"role":"user","text":"仓库初始化有什么讲究？.gitignore 之类要不要写","time":"11-09 22:27","x":0,"y":0,"parents":[27],"gen":false},{"id":29,"role":"assistant","text":"单文件项目也要把规矩立好，三个文件建议一开始就放好：\n\n- .gitignore：至少写 .DS_Store、Thumbs.db、*.log。以后加了 node_modules 再补\n- LICENSE：MIT，写清年份和你的名字\n- README.md：刚才那版\n\n首提交信息建议：chore: initial commit。之后就按功能提交，别攒一大坨再传。\n\n另外把 pomodoro.html 改名 index.html 再提交，Pages 直接就能用。","time":"11-09 22:30","x":0,"y":0,"parents":[28],"gen":false},{"id":30,"role":"user","text":"commit message 我看别人写得挺规整，有什么规范吗","time":"11-09 22:35","x":0,"y":0,"parents":[29],"gen":false},{"id":31,"role":"assistant","text":"主流是 Conventional Commits，格式：类型(范围): 描述\n\n常用类型：\n- feat：新功能\n- fix：修 bug\n- docs：文档改动\n- style：格式调整（不改逻辑）\n- refactor：重构（不改行为）\n- chore：杂务（依赖、配置）\n\n例子：\nfeat: 添加长休息自动循环\nfix: 修复倒计时到 0 不停的问题\ndocs: README 补充 Pages 地址\n\n好处是 changelog 可以自动生成，以后项目大了能省很多整理时间。小项目不用教条，但养成\"类型: 一句话\"的习惯很值。","time":"11-09 22:37","x":0,"y":0,"parents":[30],"gen":false},{"id":32,"role":"user","text":"README 里的截图一般放哪？","time":"11-09 22:40","x":0,"y":0,"parents":[31],"gen":false},{"id":33,"role":"assistant","text":"惯例是 docs/images/ 目录，README 里用相对路径引用：\n\n![预览](docs/images/screenshot.png)\n\n放 docs/images 而不是根目录的理由：仓库首页清爽，图片集中好管理，而且有些静态站生成器会特殊处理 docs 目录。\n\n截图建议截两张：一张完整界面（暗色），一张手机宽度下的响应式效果。命名 screenshot-dark.png / screenshot-mobile.png 这种，能看出内容。","time":"11-09 22:44","x":0,"y":0,"parents":[32],"gen":false},{"id":34,"role":"user","text":"部署好了，但手机打开布局有点崩，字太大按钮挤一起","time":"11-09 22:49","x":0,"y":0,"parents":[33],"gen":false},{"id":35,"role":"assistant","text":"两个问题分头修。\n\n1. 字太大：大屏上的 110px 字号直接搬手机上肯定爆。用 clamp() 做流式字号：\n#t { font-size: clamp(56px, 18vw, 110px); }\n\n2. 按钮挤：按钮组允许换行 + 缩小触控目标：\n.btns { display:flex; flex-wrap:wrap; gap:10px; justify-content:center; }\nbutton { padding:10px 16px; }\n\n另外确认 head 里有 viewport meta，没有就加：\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\n这是移动端适配的第一步，缺了它手机按 980px 桌面宽度渲染，什么布局都得崩。","time":"11-09 22:52","x":0,"y":0,"parents":[34],"gen":false},{"id":36,"role":"user","text":"加了 viewport 还是有点小问题，横屏时倒计时贴边","time":"11-09 22:56","x":0,"y":0,"parents":[35],"gen":false},{"id":37,"role":"assistant","text":"横屏高度小，垂直居中 + 大字号容易顶到边缘。给容器加安全边距：\n\nbody { padding: max(16px, env(safe-area-inset-top)) 16px 16px; box-sizing: border-box; }\n\nenv(safe-area-inset-*) 是刘海屏的安全区，iPhone 上必须有。再用媒体查询照顾矮屏：\n\n@media (max-height: 500px) {\n#t { font-size: clamp(44px, 24vh, 80px); }\n}\n\n横屏的可用高度通常不到 400px，字号按 24vh 缩放就不会贴边了。","time":"11-09 22:58","x":0,"y":0,"parents":[36],"gen":false},{"id":38,"role":"user","text":"朋友试用说想要键盘快捷键，空格调开始/暂停","time":"11-09 23:03","x":0,"y":0,"parents":[37],"gen":false},{"id":39,"role":"assistant","text":"快捷键设计，三个就够：\n\n- 空格：开始 / 暂停（同一个键切换）\n- R：重置\n- 1-3：直接切 工作 / 短休 / 长休\n\n监听加在最外层：\n\ndocument.addEventListener('keydown', e => {\nif (e.code === 'Space') { e.preventDefault(); toggleStart(); }\nif (e.code === 'KeyR') { doReset(); }\n});\n\n把 start/pause 按钮的回调抽成 toggleStart()、reset 抽成 doReset()，按钮和快捷键共用，别写两份逻辑。\n\n记得在 README 功能列表里补一句快捷键说明。","time":"11-09 23:07","x":0,"y":0,"parents":[38],"gen":false},{"id":40,"role":"user","text":"空格键和页面滚动冲突了，按下空格页面会跳","time":"11-09 23:12","x":0,"y":0,"parents":[39],"gen":false},{"id":41,"role":"assistant","text":"preventDefault 已经挡了默认滚动，还跳说明两种可能：\n\n1. 焦点在按钮上：空格会触发按钮的 click（浏览器原生行为），等于你调了 toggleStart 两次——开始立刻暂停。解法：按钮用 onmousedown 里 blur()，或者快捷键处理里判断 e.target 是不是 button/input，是就 return。\n2. 方向键/空格被扩展程序占用：换个键验证。\n\n推荐第一种修法，最稳：\n\ndocument.addEventListener('keydown', e => {\nconst t = e.target.tagName;\nif (t === 'BUTTON' || t === 'INPUT' || t === 'TEXTAREA') return;\n...\n});\n\nUI 元素不劫持的时候，空格才能真正全局。","time":"11-09 23:16","x":0,"y":0,"parents":[40],"gen":false},{"id":42,"role":"user","text":"数据统计还是想要了，最简单怎么做？不上后端","time":"11-09 23:22","x":0,"y":0,"parents":[41],"gen":false},{"id":43,"role":"assistant","text":"最简单方案：localStorage 存原始记录，读取时现算统计。数据量小（一天十几条）完全够用。\n\n存什么：每次一段番茄完成，写一条\n{ end: 时间戳, kind: 'work'|'break'|'lbreak' }\n\n读的时候按\"本地日期\"分组，算每天完成了几轮工作。图表直接纯 CSS 条形图画 7 天柱状图，不引库。\n\n注意 localStorage 的容量限制约 5MB，按每条 50 字节算能存 10 万条，用几年都到不了。真到了那天再说。","time":"11-09 23:27","x":0,"y":0,"parents":[42],"gen":false},{"id":44,"role":"user","text":"数据结构设计具体点？读写怎么封装","time":"11-09 23:30","x":0,"y":0,"parents":[43],"gen":false},{"id":45,"role":"assistant","text":"三层封装，每层只做一件事：\n\n// 1. 原始存取\nconst store = {\nkey: 'focusflow.log',\nall(){ return JSON.parse(localStorage.getItem(this.key) || '[]'); },\nadd(rec){ const a = this.all(); a.push(rec);\nlocalStorage.setItem(this.key, JSON.stringify(a)); }\n};\n\n// 2. 业务写入（计时器到点时调）\nfunction logDone(kind){\nstore.add({ end: Date.now(), kind });\n}\n\n// 3. 查询接口（统计图表用）\nfunction dailyCounts(){\nconst days = {};\nstore.all().filter(r => r.kind === 'work').forEach(r => {\nconst d = new Date(r.end).toLocaleDateString('sv-SE');\ndays[d] = (days[d] || 0) + 1;\n});\nreturn days;\n}\n\n好处：换存储后端（比如 IndexedDB）只动第 1 层，业务代码不用碰。","time":"11-09 23:35","x":0,"y":0,"parents":[44],"gen":false},{"id":46,"role":"user","text":"每日完成数按\"本地日期\"分组，跨零点做的番茄算哪天？","time":"11-09 23:39","x":0,"y":0,"parents":[45],"gen":false},{"id":47,"role":"assistant","text":"按结束时间算，落到哪天就算哪天。\n\n理由：番茄是\"完成\"才有意义的单位，你 23:50 开始、00:15 结束的番茄，精神上属于新的一天，但数据上它是 00:15 那一刻产出的记录。\n\ntoLocaleDateString('sv-SE') 按系统时区取日期，正好符合直觉。除非你要做\"凌晨 4 点前算前一天\"的熬夜党口径，那要手动减 4 小时再取日期——第一版别加这个复杂度，以后真有需求再说。","time":"11-09 23:45","x":0,"y":0,"parents":[46],"gen":false},{"id":48,"role":"user","text":"画个简单图表吧，最近 7 天每天几根柱子的那种","time":"11-09 23:47","x":0,"y":0,"parents":[47],"gen":false},{"id":49,"role":"assistant","text":"纯 CSS 方案，一个 flex 容器 + 7 个柱子，高度按最大值归一化：\n\nfunction renderChart(){\nconst days = last7Days(); // ['2026-11-03', ...]\nconst counts = dailyCounts();\nconst max = Math.max(1, ...days.map(d => counts[d] || 0));\nconst box = document.getElementById('chart');\nbox.innerHTML = days.map(d => {\nconst v = counts[d] || 0;\nconst h = Math.round(v / max * 100);\nreturn `<div class=\"col\"><div class=\"bar\" style=\"height:${h}%\"\ntitle=\"${d}: ${v} 轮\"><\/div><span>${d.slice(5)}<\/span><\/div>`;\n}).join('');\n}\n\n.col { flex:1; display:flex; flex-direction:column; justify-content:flex-end;\nalign-items:center; height:120px; }\n.bar { width:60%; background:var(--neon); border-radius:4px 4px 0 0;\nmin-height:2px; }\n.col span { font-size:11px; opacity:.6; }\n\n放在倒计时下面，默认收起，点一下展开。数据为空时画 7 根空柱子也行，或者显示\"还没有记录\"。","time":"11-09 23:53","x":0,"y":0,"parents":[48],"gen":false},{"id":50,"role":"user","text":"图表代码给我，我直接抄","time":"11-09 23:56","x":0,"y":0,"parents":[49],"gen":false},{"id":51,"role":"assistant","text":"接上面那段，补一个 last7Days 和容器：\n\nfunction last7Days(){\nconst out = [];\nfor (let i = 6; i >= 0; i--) {\nconst d = new Date(Date.now() - i * 864e5);\nout.push(d.toLocaleDateString('sv-SE'));\n}\nreturn out;\n}\n\nHTML 里加：\n\n<details id=\"stats\">\n<summary>最近 7 天<\/summary>\n<div id=\"chart\"><\/div>\n<\/details>\n\n<style>\n#stats { margin-top:24px; width:min(90vw, 420px); }\n#chart { display:flex; gap:6px; height:120px; margin-top:10px; }\n<\/style>\n\n页面加载完调一次 renderChart()，每次 onDone 里也调一次，图表就实时了。","time":"11-09 23:58","x":0,"y":0,"parents":[50],"gen":false},{"id":52,"role":"user","text":"这图表数据量大了会不会卡？比如一年后","time":"11-10 00:02","x":0,"y":0,"parents":[51],"gen":false},{"id":53,"role":"assistant","text":"算一下：一年 365 天，每天算你 16 轮（高强度使用），一年 5840 条记录，每条约 45 字节，总共 260KB。JSON.parse 这点数据是毫秒级，渲染只画 7 根柱子，跟数据总量无关。\n\n真正的瓶颈在 localStorage 同步读写：全部读出再解析。5MB 上限内（约 10 万条）都感知不到卡顿。\n\n真到了瓶颈那天，迁移路径也现成：第 1 层换成 IndexedDB，接口不变。所以不用担心，现在这套够你用三年以上。","time":"11-10 00:04","x":0,"y":0,"parents":[52],"gen":false},{"id":54,"role":"user","text":"整体差不多了，给我一份发布前检查单","time":"11-10 00:07","x":0,"y":0,"parents":[53],"gen":false},{"id":55,"role":"assistant","text":"发布前过一遍：\n\n代码\n- [ ] 控制台无报错、无警告\n- [ ] 开始/暂停/重置/快捷键全部正常\n- [ ] 工作→短休→长休循环走通 4 轮以上\n- [ ] 手机宽度 + 横屏都正常\n- [ ] 深色/浅色模式切换正常\n\n仓库\n- [ ] index.html 在根目录\n- [ ] README 截图已更新\n- [ ] LICENSE 年份正确\n- [ ] .gitignore 生效\n\n部署\n- [ ] Pages 设置的是 main 分支\n- [ ] 手机浏览器实测线上版\n- [ ] 无痕窗口测一遍（排除缓存干扰）\n\n最后一项最容易漏：本地好好的，线上有问题多半是缓存，无痕一开原形毕露。","time":"11-10 00:12","x":0,"y":0,"parents":[54],"gen":false},{"id":56,"role":"user","text":"LICENSE 就选 MIT 吧，有什么要注意的","time":"11-10 00:15","x":0,"y":0,"parents":[55],"gen":false},{"id":57,"role":"assistant","text":"MIT 只有两条要填对：\n\nMIT License\n\nCopyright (c) 2026 <你的名字或昵称>\n\n把 <...> 换成你的 GitHub 用户名即可。年份用发布当年的。\n\n它的含义一句话：任何人可以拿去做任何事，包括商用和闭源改造，但必须保留版权声明和许可文本。\n\n对你这个单文件工具来说 MIT 是最优解：没有任何传染性条款，别人 fork 去改也不需要回报你。别选 GPL——那会让引用你代码的人头疼，对一个番茄钟来说纯属劝退。","time":"11-10 00:19","x":0,"y":0,"parents":[56],"gen":false},{"id":58,"role":"user","text":"最后一个小优化：打开页面白屏那一瞬，想加个 loading 体验","time":"11-10 00:23","x":0,"y":0,"parents":[57],"gen":false},{"id":59,"role":"assistant","text":"单文件项目白屏主要是字体和首屏 CSS 闪一下，加个极简骨架屏：\n\n<style>\n#boot { position:fixed; inset:0; display:flex; align-items:center;\njustify-content:center; background:var(--bg);\ntransition:opacity .3s; z-index:10; }\n#boot.off { opacity:0; pointer-events:none; }\n<\/style>\n<div id=\"boot\">加载中…<\/div>\n<script>\nwindow.addEventListener('DOMContentLoaded', () => {\nrequestAnimationFrame(() =>\ndocument.getElementById('boot').classList.add('off'));\n});\n<\/script>\n\n其实你的页面纯内联，白屏本来就很短，这个更多是仪式感。别放转圈动画，那种\"加载 2 秒\"的体验反而显得慢。\n\n加完这一项，发布清单就全绿了。","time":"11-10 00:28","x":0,"y":0,"parents":[58],"gen":false},{"id":60,"role":"user","text":"完工！总算是发布出去了，谢谢你","time":"11-10 00:32","x":0,"y":0,"parents":[59],"gen":false},{"id":61,"role":"assistant","text":"恭喜上线！\n\n回看这一路：MVP 砍范围 → 状态机管循环 → 霓虹风定调 → 响应式收尾 → localStorage 统计，每一步都留了可用的版本，这个节奏本身比代码更值钱。\n\n后续如果想继续做，排队的事项有：手动主题切换、跳过休息按钮、周报视图。都不急，先用一周，让真实使用告诉你下一个痛点在哪。","time":"11-10 00:37","x":0,"y":0,"parents":[60],"gen":false}];
+
+/* ================= 状态 ================= */
+const S = {
+  nodes: [],            // {id, role, text, time, x, y, parents:[], mark, gen, dim}
+  sel: new Set(),
+  view: { x: 60, y: 60, k: 1 },
+  api: JSON.parse(localStorage.getItem('convoCanvas.api') || '{}'),
+  nextId: 1,
+  askMode: null,
+  focus: null,
+};
+const CARD_W = 340, GAP_Y = 30, STEP_X = 460, COL_GAP = 150;
+const ZL_F = 0.7, ZL_C = 0.3;   // 语义缩放阈值：full / compact / mini
+let ZL = 'full';
+let LAYOUT_MODE = 'col';        // 'col' 纵列 | 'snake' 分栏 | 'tree' 树形
+// 排版循环切换：col → snake → tree → col
+const LAYOUT_NEXT = { col:'snake', snake:'tree', tree:'col' };
+const LAYOUT_LABEL = { col:'纵列', snake:'分栏', tree:'树形' };
+function layoutBtnLabel(){
+  const b = document.getElementById('bLayout');
+  if (b) b.textContent = '排版：' + (LAYOUT_LABEL[LAYOUT_MODE] || '纵列');
+}
+let LOCK_K = null;              // 倍率锁定值；null=未锁定
+let MATCH = [], MSET = new Set(), MI = -1;
+let HOVER_SET = null;
+// 卡片显示高估算（中文≈22字/行，行高21；宁大勿小防重叠）
+function estH(n){
+  if (ZL === 'mini') return 52;
+  const lines = Math.ceil(Math.min(n.text.length, 500) / 22) + 1;
+  const capped = ZL === 'compact' ? Math.min(lines, 3) : Math.min(lines, 11);
+  return 36 + capped * 21 + 26;
+}
+const $ = s => document.querySelector(s);
+function esc(s){ const d=document.createElement('div'); d.textContent=s; return d.innerHTML; }
+function zlFor(k){ return k >= ZL_F ? 'full' : (k >= ZL_C ? 'compact' : 'mini'); }
+
+/* ================= 初始化 ================= */
+function init(){
+  const storeKey = 'convoCanvas.state.'+EMBED_META.sessionId;
+  const raw = localStorage.getItem(storeKey);
+  let data = EMBED_NODES;
+  if (raw) { try { const j = JSON.parse(raw);
+    if (j._gen === EMBED_META.generatedAt && Array.isArray(j.nodes)) data = j.nodes;
+    if (j.layout === 'snake' || j.layout === 'col') LAYOUT_MODE = j.layout;
+  } catch(e){} }
+  $('#bLayout').textContent = LAYOUT_LABEL[LAYOUT_NEXT[LAYOUT_MODE] || 'col'];
+  S.nodes = data;
+  S.nextId = data.reduce((m,n)=>Math.max(m,n.id),0)+1;
+  ZL = zlFor(S.view.k);
+  layout(); renderAll();
+  if (S.nodes.length){
+    const k0 = Math.min(1, innerWidth/(STEP_X*3.2));
+    S.view.k = k0; ZL = zlFor(k0);
+    if (ZL !== 'full'){ layout(); renderAll(); }
+    S.view.x = 90; S.view.y = 80;
+    applyView();
+  }
+  updateSelUI();
+  $('#bFit').onclick = ()=>fitView(true);
+  $('#bLayout').onclick = toggleLayout;
+  $('#bLock').onclick = toggleLock;
+  $('#bFocus').onclick = enterFocus;
+  $('#bUnfocus').onclick = exitFocus;
+  $('#bMerge').onclick = ()=>openAsk('merge');
+  $('#bBranch').onclick = ()=>openAsk('branch');
+  $('#bExport').onclick = exportState;
+  $('#bImport').onclick = ()=>$('#fImport').click();
+  $('#fImport').onchange = importState;
+  $('#bApi').onclick = openApi;
+  $('#q').addEventListener('input', doSearch);
+  $('#q').addEventListener('keydown', onSearchKey);
+  $('#zoomind').onclick = ()=>{ zoomAt(innerWidth/2, innerHeight/2, 1/S.view.k); };
+  $('#minimap').addEventListener('mousedown', onMinimapDown);
+  $('#guideOk').onclick = ()=>{ $('#guide').style.display='none';
+    localStorage.setItem('convoCanvas.guide.v1','1'); };
+  bindCanvas();
+  bindKeys();
+  if (!localStorage.getItem('convoCanvas.guide.v1')) $('#guide').style.display='block';
+}
+
+/* ================= 布局 ================= */
+let SIZE_CACHE = {};
+function subSize(n){
+  if (SIZE_CACHE[n.id] != null) return SIZE_CACHE[n.id];
+  SIZE_CACHE[n.id] = 0;
+  let s = 1;
+  n.children.forEach(id=>{ const c=S.nodes.find(q=>q.id===id); if(c) s+=subSize(c); });
+  SIZE_CACHE[n.id] = s; return s;
+}
+function mainChildOf(n){
+  let best=null, bs=-1;
+  n.children.forEach(id=>{
+    const c=S.nodes.find(q=>q.id===id); if(!c) return;
+    const s=subSize(c); if (s>bs || (s===bs && (best==null || id<best))) { bs=s; best=id; }
+  });
+  return best;
+}
+function buildTree(){
+  S.nodes.forEach(n=>{ n.children=[]; });
+  SIZE_CACHE = {};
+  S.nodes.forEach(n=>(n.parents||[]).forEach(p=>{
+    const pn = S.nodes.find(q=>q.id===p); if (pn) pn.children.push(n.id);
+  }));
+}
+function layout(){
+  buildTree();
+  const roots = S.nodes.filter(n=>!(n.parents&&n.parents.length));
+  if (LAYOUT_MODE === 'snake'){
+    const seen = new Set(); const order = [];
+    function walk(n){
+      if (!n || seen.has(n.id)) return; seen.add(n.id);
+      order.push(n);
+      const mc = mainChildOf(n);
+      n.children.forEach(id=>{
+        if (id !== mc){ const c=S.nodes.find(q=>q.id===id); walk(c); }
+      });
+      if (mc != null) walk(S.nodes.find(q=>q.id===mc));
+    }
+    walk(roots[0] || null);
+    roots.slice(1).forEach(r=>walk(r));
+    const budget = ZL === 'mini' ? 820 : 1700;
+    let col = 0, yInCol = 0;
+    order.forEach(n=>{
+      const h = estH(n);
+      if (yInCol > 0 && yInCol + h > budget){ col++; yInCol = 0; }
+      n.x = 40 + col*(CARD_W+COL_GAP);
+      n.y = yInCol; yInCol += h + GAP_Y;
+    });
+    return;
+  }
+  if (LAYOUT_MODE === 'tree'){
+    // 树形：分叉左右展开、子树整体居中（普通树图观感）
+    const TREE_GAP_X = 70;
+    const ROW_H = ZL === 'full' ? 330 : (ZL === 'compact' ? 200 : 120);
+    const byId = new Map(S.nodes.map(n => [n.id, n]));
+    S.nodes.forEach(n => { n._w = null; });
+    const VISIT = new Set();
+    function measure(n){
+      if (n._w != null) return n._w;
+      n._w = CARD_W;                          // 防环占位
+      const kids = (n.children || []).map(id => byId.get(id)).filter(Boolean);
+      if (!kids.length) return n._w;
+      let w = 0;
+      kids.forEach(k => { w += measure(k) + TREE_GAP_X; });
+      n._w = Math.max(CARD_W, w - TREE_GAP_X);
+      return n._w;
+    }
+    function placeTree(n, left, depth){
+      if (VISIT.has(n.id)) return;
+      VISIT.add(n.id);
+      n.x = left + (n._w - CARD_W) / 2;
+      n.y = depth * ROW_H;
+      let cx = left;
+      (n.children || []).map(id => byId.get(id)).filter(Boolean).forEach(k => {
+        placeTree(k, cx, depth + 1);
+        cx += (k._w || CARD_W) + TREE_GAP_X;
+      });
+    }
+    let tx = 40;
+    (roots.length ? roots : S.nodes).forEach(r => {
+      if (VISIT.has(r.id)) return;
+      measure(r);
+      placeTree(r, tx, 0);
+      tx += (r._w || CARD_W) + 120;
+    });
+    let oy = 0;
+    S.nodes.forEach(n => { if (n.y == null) { n.x = 40; n.y = oy; oy += ROW_H; } });
+    return;
+  }
+  let counter = 0;
+  function place(n, d, seen){
+    if (!n || seen.has(n.id)) return; seen.add(n.id);
+    n.x = 40 + d*STEP_X;
+    n.y = counter; counter += estH(n)+GAP_Y;
+    const mc = mainChildOf(n);
+    n.children.forEach(id=>{
+      if (id !== mc) { const c=S.nodes.find(q=>q.id===id); place(c, d+1, seen); }
+    });
+    if (mc != null) { const c=S.nodes.find(q=>q.id===mc); place(c, d, seen); }
+  }
+  const seen = new Set();
+  roots.forEach(r=>place(r, 0, seen));
+  S.nodes.forEach(n=>{ if(n.y==null){ n.x=40; n.y=counter; counter+=estH(n)+GAP_Y; } });
+}
+
+/* ================= 渲染 ================= */
+function focusSet(){
+  if (S.focus == null) return null;
+  const target = S.nodes.find(n=>n.id===S.focus); if(!target) return null;
+  const vis = new Set();
+  let cur = target, guard = 0;
+  while (cur && guard++ < 10000){ vis.add(cur.id); cur = S.nodes.find(n=>n.id===(cur.parents||[])[0]); }
+  return vis;
+}
+function roleName(r){ return r==='user'?'用户':r==='assistant'?'助手':r==='mark'?'压缩点':'生成'; }
+function renderAll(){
+  const vis = focusSet();
+  const layer = $('#nodes'); layer.innerHTML='';
+  const frag = document.createDocumentFragment();
+  S.nodes.forEach(n=>{
+    if (vis && !vis.has(n.id)) return;
+    const el = document.createElement('div');
+    el.className = 'card '+(n.role==='user'?'user':n.role==='assistant'?'assistant':n.role==='mark'?'mark':'gen')
+      +(n.streaming?' streaming':'')+' z-'+ZL;
+    el.dataset.id = n.id;
+    el.style.left = n.x+'px'; el.style.top = n.y+'px';
+    const clipped = n.text.length > 500;
+    el.innerHTML = (n.gen&&!n.streaming?'<div class="badge">生成</div>':'')
+      + '<div class="head"><span class="dot '+({user:'u',assistant:'a',mark:'m',gen:'g'}[n.role]||'a')+'"></span>'
+      + '<span class="who">'+roleName(n.role)+'</span><span class="time">'+esc(n.time||'')+'</span></div>'
+      + '<div class="body'+(clipped?' more':'')+'">'+esc(n.text.slice(0,500))+'</div>';
+    if (S.sel.has(n.id)) el.classList.add('selected');
+    frag.appendChild(el);
+  });
+  layer.appendChild(frag);
+  renderEdges(HOVER_SET);
+  syncSearchFx();
+  const marks = S.nodes.filter(n=>n.role==='mark').length;
+  $('#stat').textContent = '节点 '+S.nodes.length+'（压缩点 '+marks+'）· 源: '+EMBED_META.source;
+  renderMinimap();
+}
+function renderEdges(hlSet){
+  const svg = $('#edges'); const NS='http://www.w3.org/2000/svg';
+  let maxX=0,maxY=0; S.nodes.forEach(n=>{maxX=Math.max(maxX,n.x+CARD_W);maxY=Math.max(maxY,n.y+estH(n));});
+  svg.setAttribute('width', maxX+400); svg.setAttribute('height', maxY+400);
+  svg.innerHTML='';
+  const vis = focusSet();
+  S.nodes.forEach(n=>{
+    if (vis && !vis.has(n.id)) return;
+    (n.parents||[]).forEach(pid=>{
+      const p = S.nodes.find(q=>q.id===pid); if(!p) return;
+      if (vis && !vis.has(p.id)) return;
+      const path=document.createElementNS(NS,'path');
+      if (n.x > p.x + CARD_W + 10){
+        const x1=p.x+CARD_W, y1=p.y+estH(p)/2, x2=n.x, y2=n.y+Math.min(estH(n),CARD_W*0.4)/2;
+        const mx=(x1+x2)/2;
+        path.setAttribute('d','M'+x1+','+y1+' C'+mx+','+y1+' '+mx+','+y2+' '+x2+','+y2);
+      } else {
+        const x1=p.x+CARD_W/2, y1=p.y+estH(p), x2=n.x+CARD_W/2, y2=n.y;
+        path.setAttribute('d','M'+x1+','+y1+' C'+x1+','+(y1+16)+' '+x2+','+(y2-16)+' '+x2+','+y2);
+        path.setAttribute('class','main');
+      }
+      if (n.role==='mark') path.setAttribute('class','mark');
+      else if ((n.parents||[]).length>1) path.setAttribute('class','merge');
+      if (hlSet && hlSet.has(n.id) && hlSet.has(pid)) path.classList.add('hl');
+      svg.appendChild(path);
+    });
+  });
+}
+
+/* ================= 小地图 ================= */
+function mmGeom(){
+  if(!S.nodes.length) return null;
+  let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  S.nodes.forEach(n=>{minX=Math.min(minX,n.x);minY=Math.min(minY,n.y);
+    maxX=Math.max(maxX,n.x+CARD_W);maxY=Math.max(maxY,n.y+estH(n));});
+  const W=200,H=140,pad=10;
+  const s=Math.min((W-pad*2)/(maxX-minX||1),(H-pad*2)/(maxY-minY||1));
+  return {minX,minY,s,ox:pad+(W-pad*2-(maxX-minX)*s)/2,oy:pad+(H-pad*2-(maxY-minY)*s)/2};
+}
+function renderMinimap(){
+  const g=mmGeom(); const mm=$('#minimap');
+  mm.querySelectorAll('.mm-n,#mmvp').forEach(x=>x.remove());
+  if(!g) return;
+  const frag=document.createDocumentFragment();
+  S.nodes.forEach(n=>{
+    const d=document.createElement('div');
+    d.className='mm-n '+(n.role==='user'?'u':n.role==='assistant'?'a':n.role==='mark'?'m':'g');
+    d.style.left=(g.ox+(n.x-g.minX)*g.s)+'px';
+    d.style.top=(g.oy+(n.y-g.minY)*g.s)+'px';
+    d.style.width=Math.max(2.5,CARD_W*g.s)+'px';
+    d.style.height=Math.max(2,estH(n)*g.s)+'px';
+    frag.appendChild(d);
+  });
+  const vpBox=document.createElement('div'); vpBox.id='mmvp';
+  frag.appendChild(vpBox);
+  mm.appendChild(frag);
+  updateMMViewport();
+}
+function updateMMViewport(){
+  const g=mmGeom(); const box=$('#mmvp'); if(!g||!box) return;
+  const wx=-S.view.x/S.view.k, wy=-S.view.y/S.view.k;
+  const ww=innerWidth/S.view.k, wh=innerHeight/S.view.k;
+  box.style.cssText='position:absolute;border:1.5px solid #6ea8fe;background:rgba(110,168,254,.10);border-radius:2px;'
+    +'left:'+(g.ox+(wx-g.minX)*g.s)+'px;top:'+(g.oy+(wy-g.minY)*g.s)+'px;'
+    +'width:'+Math.max(8,ww*g.s)+'px;height:'+Math.max(8,wh*g.s)+'px';
+}
+function onMinimapDown(e){
+  e.stopPropagation();
+  const mm=$('#minimap').getBoundingClientRect();
+  const jump=(cx,cy)=>{
+    const g=mmGeom(); if(!g) return;
+    const wx=(cx-mm.left-g.ox)/g.s+g.minX, wy=(cy-mm.top-g.oy)/g.s+g.minY;
+    S.view.x=innerWidth/2-wx*S.view.k; S.view.y=innerHeight/2-wy*S.view.k;
+    applyView();
+  };
+  jump(e.clientX,e.clientY);
+  const mv=ev=>jump(ev.clientX,ev.clientY);
+  const up=()=>{window.removeEventListener('mousemove',mv);window.removeEventListener('mouseup',up);};
+  window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up);
+}
+
+/* ================= 搜索 ================= */
+function doSearch(){
+  const q=$('#q').value.trim().toLowerCase();
+  MATCH=[]; MSET=new Set(); MI=-1;
+  if(q){
+    const vis=focusSet();
+    S.nodes.forEach(n=>{
+      if(vis && !vis.has(n.id)) return;
+      if(n.text.toLowerCase().includes(q)){ MATCH.push(n.id); MSET.add(n.id); }
+    });
+    MATCH.sort((a,b)=>a-b);
+  }
+  syncSearchFx();
+  $('#qinfo').textContent = q ? (MATCH.length? MATCH.length+' 条匹配 · Enter 跳转':'无匹配') : '';
+}
+function syncSearchFx(){
+  const q=$('#q').value.trim();
+  document.querySelectorAll('.card').forEach(el=>{
+    const i=+el.dataset.id;
+    el.classList.toggle('hit', !!q && MSET.has(i));
+    el.classList.toggle('faded', !!q && !MSET.has(i));
+  });
+}
+function onSearchKey(e){
+  if(e.key==='Enter'){
+    e.preventDefault();
+    if(!MATCH.length) return;
+    MI=(MI+1)%MATCH.length;
+    jumpTo(MATCH[MI]);
+    $('#qinfo').textContent=(MI+1)+' / '+MATCH.length+' · Enter 下一个';
+  }
+}
+
+/* ================= 视图变换 ================= */
+function applyView(){
+  $('#world').style.transform = 'translate('+S.view.x+'px,'+S.view.y+'px) scale('+S.view.k+')';
+  $('#zoomind').textContent = Math.round(S.view.k*100)+'%';
+  updateMMViewport();
+}
+function zoomAt(mx,my,f){
+  const k2=Math.min(2.5,Math.max(.08,S.view.k*f));
+  S.view.x=mx-(mx-S.view.x)*(k2/S.view.k); S.view.y=my-(my-S.view.y)*(k2/S.view.k);
+  S.view.k=k2; applyView(); scheduleZL();
+}
+function fitView(){
+  const pad=80; let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  const vis = focusSet();
+  let cnt = 0;
+  S.nodes.forEach(n=>{ if (vis && !vis.has(n.id)) return; cnt++;
+    minX=Math.min(minX,n.x); minY=Math.min(minY,n.y);
+    maxX=Math.max(maxX,n.x+CARD_W); maxY=Math.max(maxY,n.y+estH(n)); });
+  if(!cnt) return;
+  const w=innerWidth-pad*2, h=innerHeight-120-pad;
+  const k=Math.min(w/(maxX-minX), h/(maxY-minY), 1);
+  S.view.k=k;
+  S.view.x=(innerWidth-(maxX-minX)*k)/2 - minX*k;
+  S.view.y=80+(h-(maxY-minY)*k)/2 - minY*k;
+  applyView(); scheduleZL();
+}
+// 语义缩放：跨越显示层级时重排（防抖，防缩放中抖动）
+let zlTimer=null;
+function scheduleZL(){
+  clearTimeout(zlTimer);
+  zlTimer=setTimeout(()=>{
+    const want=zlFor(S.view.k);
+    if(want!==ZL){ ZL=want; layout(); renderAll(); syncSelClass(); }
+  },180);
+}
+
+/* ================= 画布交互 ================= */
+function bindCanvas(){
+  const vp=$('#viewport');
+  let mode=null, sx=0, sy=0, ox=0, oy=0;
+  let marquee=null, mstart=null;
+  vp.addEventListener('wheel', e=>{
+    // 卡片内滚轮：全文级 → 滚动卡片内容；缩略级 → 先升到全文级（滚轮摸卡片=想读它）
+    const bodyEl = e.target.closest ? e.target.closest('.card .body') : null;
+    if (bodyEl && !e.ctrlKey && !e.metaKey && Math.abs(e.deltaY) >= Math.abs(e.deltaX)){
+      const cardEl = bodyEl.closest('.card');
+      const atFull = cardEl && !cardEl.classList.contains('z-compact') && !cardEl.classList.contains('z-mini');
+      if (!atFull){
+        e.preventDefault();
+        if (S.view.k < ZL_F){
+          const r = vp.getBoundingClientRect();
+          zoomAt(e.clientX-r.left, e.clientY-r.top, (ZL_F + 0.03)/S.view.k);
+          clearTimeout(zlTimer);
+          ZL = zlFor(S.view.k); layout(); renderAll(); syncSelClass();
+        }
+        return;
+      }
+      if (bodyEl.scrollHeight > bodyEl.clientHeight + 2){
+        const before = bodyEl.scrollTop;
+        bodyEl.scrollTop += e.deltaY;
+        if (bodyEl.scrollTop !== before){ e.preventDefault(); return; }  // 滚动了 → 不动画布
+      }
+    }
+    e.preventDefault();
+    if (LOCK_K != null){   // 倍率锁定：滚轮=平移浏览
+      S.view.x -= (e.deltaX || 0); S.view.y -= (e.deltaY || 0);
+      applyView(); return;
+    }
+    const r=vp.getBoundingClientRect();
+    zoomAt(e.clientX-r.left, e.clientY-r.top, e.deltaY<0?1.12:1/1.12);
+  },{passive:false});
+  vp.addEventListener('mousedown', e=>{
+    if (e.target.closest('.card')) return;
+    sx=e.clientX; sy=e.clientY; ox=S.view.x; oy=S.view.y;
+    // 左键拖空白 = 平移画布（默认）；Shift+拖 = 框选；中键/Alt+拖 = 平移
+    if (e.button===1 || e.altKey || !e.shiftKey) { mode='pan'; vp.style.cursor='grabbing'; }
+    else {
+      mode='marquee';
+      const r=$('#world').getBoundingClientRect();
+      mstart={x:(e.clientX-r.left)/S.view.k, y:(e.clientY-r.top)/S.view.k};
+      marquee=document.createElement('div');
+      marquee.style.cssText='position:absolute;border:1px solid #6ea8fe;background:rgba(110,168,254,.12);z-index:40;pointer-events:none';
+      $('#world').appendChild(marquee);
+      if (!e.ctrlKey && !e.metaKey){ S.sel.clear(); updateSelUI(); syncSelClass(); }
+    }
+  });
+  window.addEventListener('mousemove', e=>{
+    if (!mode) return;
+    const dx=e.clientX-sx, dy=e.clientY-sy;
+    if (mode==='pan'){ S.view.x=ox+dx; S.view.y=oy+dy; applyView(); return; }
+    if (mode==='marquee' && marquee){
+      const r=$('#world').getBoundingClientRect();
+      const cx=(e.clientX-r.left)/S.view.k, cy=(e.clientY-r.top)/S.view.k;
+      const x=Math.min(mstart.x,cx), y=Math.min(mstart.y,cy);
+      const w=Math.abs(cx-mstart.x), h=Math.abs(cy-mstart.y);
+      Object.assign(marquee.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});
+      marquee._rect={x,y,w,h};
+    }
+  });
+  window.addEventListener('mouseup', e=>{
+    if (mode==='marquee' && marquee){
+      const rc=marquee._rect;
+      if (rc && rc.w>6){
+        S.nodes.forEach(n=>{
+          if (n.x<rc.x+rc.w && n.x+CARD_W>rc.x && n.y<rc.y+rc.h && n.y+estH(n)>rc.y
+              && n.role!=='mark') S.sel.add(n.id);
+        });
+        updateSelUI(); syncSelClass();
+      }
+      marquee.remove();
+    }
+    mode=null; marquee=null; vp.style.cursor='default';
+  });
+  /* ---------- Shift+拖拽卡片 = 手动连线 ---------- */
+  function startLink(fromId){
+    const from=S.nodes.find(n=>n.id===fromId); if(!from) return;
+    const svg=$('#edges'); const NS='http://www.w3.org/2000/svg';
+    const path=document.createElementNS(NS,'path');
+    path.setAttribute('class','linking');
+    svg.appendChild(path);
+    document.body.classList.add('linking');
+    const srcX=from.x+CARD_W/2, srcY=from.y+estH(from);
+    function world(ev){
+      const r=$('#world').getBoundingClientRect();
+      return { x:(ev.clientX-r.left)/S.view.k, y:(ev.clientY-r.top)/S.view.k };
+    }
+    function clearHi(){
+      document.querySelectorAll('.card.link-target').forEach(x=>x.classList.remove('link-target'));
+    }
+    function mv(ev){
+      const p=world(ev);
+      const mx=(srcX+p.x)/2;
+      path.setAttribute('d','M'+srcX+' '+srcY+' C'+mx+' '+srcY+' '+mx+' '+p.y+' '+p.x+' '+p.y);
+      clearHi();
+      const el=document.elementFromPoint(ev.clientX,ev.clientY);
+      const c=el&&el.closest?el.closest('.card'):null;
+      if(c && +c.dataset.id!==fromId) c.classList.add('link-target');
+    }
+    function up(ev){
+      window.removeEventListener('mousemove',mv);
+      window.removeEventListener('mouseup',up);
+      path.remove(); clearHi(); document.body.classList.remove('linking');
+      const el=document.elementFromPoint(ev.clientX,ev.clientY);
+      const c=el&&el.closest?el.closest('.card'):null;
+      if(!c) return;
+      const tid=+c.dataset.id;
+      if(tid===fromId) return;
+      const target=S.nodes.find(n=>n.id===tid); if(!target) return;
+      let cur=from, guard=0;
+      while(cur && guard++<5000){
+        if(cur.id===tid) return;                     // 拒绝成环
+        cur=S.nodes.find(n=>n.id===(cur.parents||[])[0]);
+      }
+      target.parents=[fromId];                       // 把目标接到源后面
+      layout(); renderAll(); syncSelClass(); saveState();
+    }
+    window.addEventListener('mousemove',mv);
+    window.addEventListener('mouseup',up);
+  }
+
+  // 卡片：点选/多选/拖动/双击/悬停路径
+  $('#nodes').addEventListener('mousedown', e=>{
+    const card=e.target.closest('.card'); if(!card) return;
+    e.stopPropagation();
+    const id=+card.dataset.id;
+    // Shift+拖拽卡片 = 手动连线（把目标接到源后面）；Shift/Ctrl 点击 = 多选
+    if (e.shiftKey && !e.ctrlKey && !e.metaKey){ startLink(id); return; }
+    if (e.ctrlKey||e.metaKey){
+      S.sel.has(id)?S.sel.delete(id):S.sel.add(id);
+      updateSelUI(); syncSelClass();
+    } else if (!S.sel.has(id)){ S.sel.clear(); S.sel.add(id); updateSelUI(); syncSelClass(); }
+    const ids=[...S.sel];
+    const start={}; ids.forEach(i=>{ const n=S.nodes.find(q=>q.id===i); start[i]={dx:e.clientX/S.view.k-n.x, dy:e.clientY/S.view.k-n.y}; });
+    let dragged=false;
+    function mv(ev){
+      dragged=true;
+      ids.forEach(i=>{
+        const n=S.nodes.find(q=>q.id===i);
+        n.x=ev.clientX/S.view.k-start[i].dx; n.y=ev.clientY/S.view.k-start[i].dy;
+        const el=document.querySelector('.card[data-id="'+i+'"]');
+        if(el){ el.style.left=n.x+'px'; el.style.top=n.y+'px'; }
+      });
+      renderEdges(HOVER_SET);
+    }
+    function up(){ window.removeEventListener('mousemove',mv); window.removeEventListener('mouseup',up);
+      if(dragged) saveState(); }
+    window.addEventListener('mousemove',mv); window.addEventListener('mouseup',up);
+  });
+  $('#nodes').addEventListener('dblclick', e=>{
+    const card=e.target.closest('.card'); if(!card) return;
+    const n=S.nodes.find(q=>q.id===+card.dataset.id); if(!n) return;
+    $('#fullTitle').textContent=roleName(n.role)+' · '+(n.time||'');
+    $('#fulltext').textContent=n.text;
+    $('#mFull').style.display='flex';
+  });
+  // 悬停高亮 根→该节点 路径（搜索激活时让位给搜索）
+  $('#nodes').addEventListener('mouseover', e=>{
+    const card=e.target.closest('.card'); if(!card) return;
+    if ($('#q').value.trim()) return;
+    const id=+card.dataset.id;
+    const set=new Set(); let cur=S.nodes.find(n=>n.id===id), g=0;
+    while(cur && g++<10000){ set.add(cur.id); cur=S.nodes.find(n=>n.id===(cur.parents||[])[0]); }
+    HOVER_SET=set;
+    document.querySelectorAll('.card').forEach(el=>{
+      const i=+el.dataset.id;
+      el.classList.toggle('onpath', set.has(i));
+      el.classList.toggle('faded2', !set.has(i));
+    });
+    renderEdges(set);
+  });
+  $('#nodes').addEventListener('mouseout', e=>{
+    const card=e.target.closest('.card'); if(!card) return;
+    if (e.relatedTarget && card.contains(e.relatedTarget)) return;
+    HOVER_SET=null;
+    document.querySelectorAll('.card').forEach(el=>el.classList.remove('onpath','faded2'));
+    renderEdges(null);
+  });
+}
+function closeFull(){ $('#mFull').style.display='none'; }
+function closeAllModals(){
+  ['#mAsk','#mApi','#mFull'].forEach(s=>{ $(s).style.display='none'; });
+}
+function syncSelClass(){
+  document.querySelectorAll('.card').forEach(el=>{
+    el.classList.toggle('selected', S.sel.has(+el.dataset.id));
+  });
+}
+function updateSelUI(){
+  const n=S.sel.size;
+  $('#bMerge').disabled = n<2;
+  $('#bBranch').disabled = !(n===1);
+  $('#selinfo').textContent = n? '已选 '+n+' 条':'';
+  const p=$('#ctxpanel');
+  if (n>=1){
+    p.style.display='block';
+    $('#ctxn').textContent=n;
+    const sorted=[...S.sel].map(i=>S.nodes.find(q=>q.id===i)).sort((a,b)=>a.id-b.id);
+    $('#ctxlist').innerHTML = sorted.map(x=>
+      '<div class="item" onclick="jumpTo('+x.id+')"><span class="t">'+(x.time||'')+'</span>'
+      +'<span class="dot '+({user:'u',assistant:'a',mark:'m',gen:'g'}[x.role]||'a')+'"></span>'
+      +esc(x.text.slice(0,60))+'</div>'
+    ).join('');
+  } else p.style.display='none';
+}
+function jumpTo(id){
+  const n=S.nodes.find(q=>q.id===id); if(!n) return;
+  S.view.x = innerWidth/2-(n.x+CARD_W/2)*S.view.k;
+  S.view.y = 90-(n.y)*S.view.k;
+  applyView();
+  const el=document.querySelector('.card[data-id="'+id+'"]');
+  if(el){ el.style.boxShadow='0 0 0 3px rgba(201,162,39,.7)'; setTimeout(()=>{el.style.boxShadow='';},900); }
+}
+
+/* ================= 快捷键 ================= */
+function bindKeys(){
+  window.addEventListener('keydown', e=>{
+    const tag=(e.target.tagName||'').toLowerCase();
+    const typing = tag==='input'||tag==='textarea';
+    if (e.key==='Escape'){
+      if ($('#mAsk').style.display==='flex' || $('#mApi').style.display==='flex' || $('#mFull').style.display==='flex'){ closeAllModals(); return; }
+      if (document.activeElement===$('#q')){ if($('#q').value){ $('#q').value=''; doSearch(); } $('#q').blur(); return; }
+      if (S.focus!=null){ exitFocus(); return; }
+      return;
+    }
+    if (typing) return;
+    if (e.key==='/'){ e.preventDefault(); $('#q').focus(); }
+    else if (e.key==='1'){ fitView(); }
+    else if (e.key==='f'||e.key==='F'){ if(S.sel.size===1) enterFocus(); }
+    else if (e.key==='+'||e.key==='='){ zoomAt(innerWidth/2,innerHeight/2,1.2); }
+    else if (e.key==='-'){ zoomAt(innerWidth/2,innerHeight/2,1/1.2); }
+  });
+}
+
+/* ================= 排版切换 / 倍率锁定 / 聚焦 ================= */
+function resetFocusUI(){
+  S.focus = null;
+  $('#bFocus').style.display = '';
+  $('#bUnfocus').style.display = 'none';
+}
+function toggleLayout(){
+  LAYOUT_MODE = LAYOUT_NEXT[LAYOUT_MODE] || 'col';
+  layoutBtnLabel();
+  resetFocusUI();   // 换排版=看全局的意图，自动退出聚焦
+  layout(); renderAll(); syncSelClass(); fitView();
+  saveState();
+}
+function toggleLock(){
+  if (LOCK_K == null){
+    LOCK_K = S.view.k;
+    $('#bLock').textContent = '解锁 (' + Math.round(LOCK_K*100) + '%)';
+    $('#bLock').classList.add('primary');
+  } else {
+    LOCK_K = null;
+    $('#bLock').textContent = '锁倍率';
+    $('#bLock').classList.remove('primary');
+  }
+}
+function enterFocus(){
+  const id = [...S.sel][0];
+  if (id == null) return;
+  S.focus = id;
+  $('#bFocus').style.display = 'none';
+  $('#bUnfocus').style.display = '';
+  renderAll(); syncSelClass();
+  const vis = focusSet();
+  if (vis && vis.size){
+    let top = null;
+    vis.forEach(i=>{ const n=S.nodes.find(q=>q.id===i); if(n && (!top || n.y<top.y)) top=n; });
+    if (top){
+      S.view.k = Math.max(S.view.k, 1.15);
+      S.view.x = innerWidth/2 - (40+CARD_W/2)*S.view.k;
+      S.view.y = 90 - top.y*S.view.k;
+      applyView(); scheduleZL();
+    }
+  }
+}
+function exitFocus(){
+  resetFocusUI();
+  renderAll(); syncSelClass(); fitView();
+}
+
+/* ================= 合并 / 发散 ================= */
+function openAsk(mode){
+  const ids=[...S.sel].sort((a,b)=>a-b);
+  S.askMode={mode, ids};
+  const sorted=ids.map(i=>S.nodes.find(q=>q.id===i)).sort((a,b)=>a.id-b.id);
+  $('#askTitle').textContent = mode==='merge' ? '合并 '+ids.length+' 条所选 → 综合生成' : '从所选节点发散续聊';
+  $('#askCtx').value = sorted.map(x=>
+    '【'+roleName(x.role)+' '+(x.time||'')+'】\n'+x.text
+  ).join('\n\n');
+  $('#askQ').value='';
+  updTok();
+  $('#askCtx').oninput=updTok;
+  $('#mAsk').style.display='flex';
+  setTimeout(()=>$('#askQ').focus(),50);
+}
+function updTok(){ $('#askTok').textContent='≈ '+Math.round($('#askCtx').value.length/3.2)+' tokens(粗估)'; }
+$('#askCancel').onclick=()=>{ $('#mAsk').style.display='none'; };
+$('#askGo').onclick=async ()=>{
+  const q=$('#askQ').value.trim();
+  if(!q){ alert('先写你的指令/问题'); return; }
+  if(!S.api.base||!S.api.key){ alert('先去「API 设置」填 Base URL 和 Key（只存本机浏览器）'); $('#mAsk').style.display='none'; openApi(); return; }
+  const {mode, ids}=S.askMode;
+  $('#mAsk').style.display='none';
+  const now=new Date();
+  const time=now.toLocaleTimeString('zh-CN',{hour12:false});
+  const node={
+    id: S.nextId++, role:'gen', gen:true, streaming:true,
+    text:'', time,
+    parents: ids,
+  };
+  S.nodes.push(node); layout(); renderAll(); jumpTo(node.id);
+  const sys='你是用户的 AI 助手。请基于用户给出的对话上下文回答问题。'
+    +(mode==='merge'?'用户选择了多段对话，要求你对它们进行综合/比较/提炼。':'');
+  const userMsg='上下文：\n'+$('#askCtx').value+'\n\n指令：\n'+q;
+  try{
+    const text=await callLLM([{role:'system',content:sys},{role:'user',content:userMsg}], (delta)=>{
+      node.text+=delta;
+      const el=document.querySelector('.card[data-id="'+node.id+'"] .body');
+      if(el) el.textContent=node.text.slice(0,500);
+    });
+    node.text=text; node.streaming=false;
+  }catch(err){
+    node.text='生成失败：'+(err.message||err); node.streaming=false; node.failed=true;
+  }
+  layout(); renderAll(); saveState(); updateSelUI(); syncSelClass(); jumpTo(node.id);
+};
+
+/* ================= LLM 调用（OpenAI 兼容，SSE 流式） ================= */
+async function callLLM(messages, onDelta){
+  const url=S.api.base.replace(/\/+$/,'')+'/chat/completions';
+  const res=await fetch(url,{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+S.api.key},
+    body:JSON.stringify({model:S.api.model||'k2p6',messages,temperature:+(S.api.temp??0.7),stream:true})
+  });
+  if(!res.ok) throw new Error('HTTP '+res.status+'：'+(await res.text()).slice(0,200));
+  const reader=res.body.getReader(), dec=new TextDecoder();
+  let buf='', full='';
+  while(true){
+    const {done,value}=await reader.read(); if(done) break;
+    buf+=dec.decode(value,{stream:true});
+    const lines=buf.split('\n'); buf=lines.pop();
+    for(const ln of lines){
+      const t=ln.trim(); if(!t.startsWith('data:')) continue;
+      const d=t.slice(5).trim();
+      if(d==='[DONE]') continue;
+      try{
+        const j=JSON.parse(d);
+        const delta=j.choices&&j.choices[0]&&j.choices[0].delta&&j.choices[0].delta.content;
+        if(delta){ full+=delta; onDelta(delta); }
+      }catch(e){}
+    }
+  }
+  return full;
+}
+
+/* ================= API 设置 ================= */
+function openApi(){
+  $('#apiBase').value=S.api.base||''; $('#apiKey').value=S.api.key||'';
+  $('#apiModel').value=S.api.model||''; $('#apiTemp').value=S.api.temp??0.7;
+  $('#apiMsg').textContent='';
+  $('#mApi').style.display='flex';
+}
+$('#apiSave').onclick=()=>{
+  S.api={base:$('#apiBase').value.trim(), key:$('#apiKey').value.trim(),
+         model:$('#apiModel').value.trim(), temp:+$('#apiTemp').value};
+  localStorage.setItem('convoCanvas.api', JSON.stringify(S.api));
+  $('#mApi').style.display='none';
+};
+$('#apiTest').onclick=async ()=>{
+  S.api={base:$('#apiBase').value.trim(), key:$('#apiKey').value.trim(),
+         model:$('#apiModel').value.trim(), temp:+$('#apiTemp').value};
+  $('#apiMsg').textContent='测试中…';
+  try{
+    const t=await callLLM([{role:'user',content:'用一句话介绍你自己'}],()=>{});
+    $('#apiMsg').textContent='连接成功：'+t.slice(0,60);
+  }catch(e){ $('#apiMsg').textContent='失败：'+e.message; }
+};
+
+/* ================= 导入 / 导出 / 持久化 ================= */
+function saveState(){
+  const slim=S.nodes.map(({id,role,text,time,x,y,parents,gen,mark,dim})=>({id,role,text,time,x,y,parents,gen,mark,dim}));
+  localStorage.setItem('convoCanvas.state.'+EMBED_META.sessionId,
+    JSON.stringify({_gen: EMBED_META.generatedAt, nodes: slim, layout: LAYOUT_MODE}));
+}
+function exportState(){
+  const data={meta:EMBED_META, exportedAt:new Date().toISOString(), layout: LAYOUT_MODE,
+    nodes:S.nodes.map(({id,role,text,time,x,y,parents,gen,mark,dim})=>({id,role,text,time,x,y,parents,gen,mark,dim}))};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='convo_canvas_'+EMBED_META.sessionId.slice(0,8)+'.json';
+  a.click();
+}
+function importState(e){
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const j=JSON.parse(r.result);
+      if(!Array.isArray(j.nodes)) throw new Error('格式不对');
+      S.nodes=j.nodes; S.nextId=j.nodes.reduce((m,n)=>Math.max(m,n.id),0)+1;
+      if (j.layout === 'snake' || j.layout === 'col' || j.layout === 'tree'){
+        LAYOUT_MODE = j.layout;
+        layoutBtnLabel();
+      }
+      S.focus = null;
+      resetFocusUI();
+      layout(); renderAll(); fitView(); updateSelUI(); syncSelClass();
+      alert('导入成功：'+j.nodes.length+' 个节点');
+    }catch(err){ alert('导入失败：'+err.message); }
+  };
+  r.readAsText(f); e.target.value='';
+}
+
+init();
+</script>
+
+<script id="cv-palette-js">
+(function () {
+  var KEY = 'convoCanvas.palette.v1';
+  var root = document.documentElement;
+  var allowed = ['auto', 'graphite', 'midnight', 'forest', 'sand', 'light', 'contrast'];
+  var sel = document.getElementById('cvPalette');
+  function resolve(name) {
+    if (name === 'auto') {
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'graphite';
+    }
+    return name;
+  }
+  function apply(choice) {
+    var value = allowed.indexOf(choice) >= 0 ? choice : 'auto';
+    root.setAttribute('data-cv-choice', value);
+    root.setAttribute('data-cv-palette', resolve(value));
+    if (sel) sel.value = value;
+  }
+  var stored = null;
+  try { stored = localStorage.getItem(KEY); } catch (e) {}
+  try {
+    var fromUrl = new URLSearchParams(location.search).get('palette');
+    if (fromUrl && allowed.indexOf(fromUrl) >= 0) stored = fromUrl;
+  } catch (e) {}
+  apply(stored || 'auto');
+  if (sel) {
+    sel.addEventListener('change', function () {
+      apply(sel.value);
+      try { localStorage.setItem(KEY, sel.value); } catch (e) {}
+    });
+  }
+  try {
+    var mq = window.matchMedia('(prefers-color-scheme: light)');
+    var onChange = function () { if (root.getAttribute('data-cv-choice') === 'auto') apply('auto'); };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  } catch (e) {}
+})();
+</script>
+
+<script>
+/* DEFAULT-VIEW */
+window.addEventListener('load', function(){
+  setTimeout(function(){
+    try {
+      var g = document.getElementById('guide'); if (g) g.style.display = 'none';
+      LAYOUT_MODE = 'snake';
+      if (typeof layoutBtnLabel === 'function') layoutBtnLabel();
+      ZL = 'compact';
+      layout(); renderAll();
+      var minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9,cnt=0;
+      var cards = document.querySelectorAll('#nodes .card');
+      for (var i=0;i<cards.length;i++){
+        var el=cards[i];
+        var x=parseFloat(el.style.left), y=parseFloat(el.style.top);
+        if (isNaN(x)||isNaN(y)) continue;
+        cnt++;
+        minX=Math.min(minX,x); minY=Math.min(minY,y);
+        maxX=Math.max(maxX,x+el.offsetWidth); maxY=Math.max(maxY,y+el.offsetHeight);
+      }
+      if(!cnt){ document.title='VIEW-ERR'; return; }
+      var w=maxX-minX, h=maxY-minY;
+      var k=Math.max(0.18, Math.min(0.95, Math.min((innerWidth-130)/w, (innerHeight-230)/h)));
+      S.view.k=k;
+      S.view.x=(innerWidth-w*k)/2 - minX*k;
+      S.view.y=95+(innerHeight-125-h*k)/2 - minY*k;
+      applyView();
+      document.title='VIEW-OK '+LAYOUT_MODE+' '+ZL+' k='+k.toFixed(3)+' '+Math.round(w)+'x'+Math.round(h);
+    } catch(e){ document.title='VIEW-EX '+e.message; }
+  }, 320);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+# convo-canvas
+
+> convo-canvas turns an existing AI chat session (OpenClaw or DeepSeek Harness) into a self-contained, interactive HTML canvas where every message is a card. Users select the turns that matter, merge them into one curated context, branch new threads with any OpenAI-compatible model, rewire cards by hand, and lay the whole conversation out as a column, a snake, or a tree. Output is a single offline HTML file; no server, no telemetry.
+
+## Canonical facts
+
+- Type: CLI + MCP server that exports session files to a single-file HTML viewer/editor.
+- Input: OpenClaw `.jsonl` session dirs (`~/.openclaw/agents/main/sessions`, `~/.kimi_openclaw/...`) and DeepSeek Harness zstd sessions (`~/.dsh/sessions/**/session.v4.jsonl.zstd`). Any `.jsonl` matching the OpenClaw record shape works via `--sessions-dir`.
+- Output: one HTML file per session (typically 60–400 KB), opened directly in a browser via `file://`.
+- Requirements: Node.js ≥ 22.15 (native zstd). CLI has zero dependencies; `npm install` only needed for the MCP server.
+- Layouts: column, snake, tree.
+- Editing: marquee select, merge into a curated context, branch with an LLM (streaming), Shift+drag card→card manual links (cycle-safe), drag to reposition; state persists in `localStorage` and exports as JSON.
+- Privacy: local-only, no telemetry; API keys stay in browser `localStorage`.
+
+## Install / run
+
+```
+git clone https://github.com/YCk11-a/session-canvas-.git
+cd convo-canvas
+node bin/cli.js                    # latest session → ~/convo-canvases/
+node bin/cli.js <sessionId> -o out.html
+node bin/cli.js latest --source dsh|openclaw
+```
+
+MCP (stdio):
+
+```
+{"mcpServers":{"convo-canvas":{"command":"node","args":["<path-to-convo-canvas>/bin/mcp.js"]}}}
+```
+
+Tools: `list_sessions`, `generate_canvas`, `canvas_status`.
+
+## Questions this project answers
+
+- How do I visualize a long OpenClaw or DeepSeek Harness session as a graph?
+- How can I shrink a 300-turn chat into a curated context before continuing?
+- Which tool imports existing agent sessions (with parent/child structure) into a canvas?
+- Is there an offline, single-file chat history explorer?
+- Can I branch a conversation from any point using my own model?
+- How do I lay out a forking conversation as a tree diagram?
+
+## Differentiation
+
+- Unlike canvas-chat (visual branching chat), it imports *existing* session files with native `id`/`parentId` chains.
+- Unlike Obsidian Canvas or generic mind-map tools, no manual card creation — sessions load as-is.
+- Unlike chat export viewers, the canvas is editable: merge, branch, relink, relayout.
+- Unlike built-in chat UIs, it is not bound to one context window or one vendor, and the artifact is a portable HTML file.
+
+## Comparison one-liners
+
+- canvas-chat: starts new branches, cannot import your history.
+- Obsidian Canvas: manual cards, no session import.
+- Markdown exports: readable, not operable.
+- Built-in chat search: linear, no overview, no branching.
+
+## License
+
+MIT

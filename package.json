@@ -1,0 +1,53 @@
+{
+  "name": "convo-canvas",
+  "version": "1.0.0",
+  "description": "Turn AI chat sessions (OpenClaw, DeepSeek Harness) into an interactive canvas: merge and branch with any LLM, tree/snake layouts, single-file HTML output, MCP server included.",
+  "keywords": [
+    "conversation-visualization",
+    "chat-history",
+    "session-viewer",
+    "context-engineering",
+    "mcp",
+    "mcp-server",
+    "infinite-canvas",
+    "conversation-canvas",
+    "llm",
+    "openclaw",
+    "deepseek",
+    "claude",
+    "tree-layout",
+    "local-first",
+    "offline",
+    "single-file"
+  ],
+  "license": "MIT",
+  "author": "CK-Y19",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YCk11-a/session-canvas-.git"
+  },
+  "homepage": "https://github.com/YCk11-a/session-canvas-#readme",
+  "bugs": "https://github.com/YCk11-a/session-canvas-/issues",
+  "type": "commonjs",
+  "bin": {
+    "convo-canvas": "bin/cli.js",
+    "convo-canvas-mcp": "bin/mcp.js"
+  },
+  "main": "src/gen.js",
+  "scripts": {
+    "start": "node bin/cli.js",
+    "mcp": "node bin/mcp.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": {
+    "node": ">=22.15"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.24.0"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "llms.txt"
+  ]
+}

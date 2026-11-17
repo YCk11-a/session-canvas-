@@ -1,0 +1,10 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+out/
+.vscode/
+.idea/
+*.bak
+*.bak-*
+docs/_shot*.html
